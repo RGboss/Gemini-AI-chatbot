@@ -7,14 +7,19 @@ export class ApiError extends Error {
 
 export async function api(path, options = {}) {
   let response;
+  const isFormData = typeof FormData !== 'undefined' && options.body instanceof FormData;
+  const headers = isFormData
+    ? { ...options.headers }
+    : { 'Content-Type': 'application/json', ...options.headers };
+
   try {
     response = await fetch(`/api${path}`, {
       credentials: 'include',
       ...options,
-      headers: { 'Content-Type': 'application/json', ...options.headers },
+      headers,
     });
   } catch {
-    throw new ApiError('Cannot reach the server. Check that the FastAPI backend is running.', 0);
+    throw new ApiError('Cannot reach the Orbit server. Please check if the backend is running.', 0);
   }
   if (response.status === 204) return null;
   let data;

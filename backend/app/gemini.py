@@ -1,4 +1,6 @@
+from typing import Any
 import logging
+from collections.abc import AsyncIterator
 from typing import Protocol
 
 import httpx
@@ -13,7 +15,13 @@ logger = logging.getLogger(__name__)
 
 
 class ReplyGenerator(Protocol):
-    async def reply(self, messages: list[dict[str, str]]) -> str: ...
+    async def reply(
+        self, messages: list[dict[str, str]], context: str | None = None
+    ) -> str: ...
+
+    async def reply_stream(
+        self, messages: list[dict[str, str]], context: str | None = None
+    ) -> AsyncIterator[str]: ...
 
     async def close(self) -> None: ...
 
@@ -21,22 +29,119 @@ class ReplyGenerator(Protocol):
 class GeminiService:
     def __init__(self, settings: Settings) -> None:
         self.model = settings.gemini_model
-        self.client = (
+        self.keys = settings.orchestrator_keys
+        self.clients = [
             genai.Client(
-                api_key=settings.google_api_key,
+                api_key=key,
                 http_options=types.HttpOptions(timeout=60_000),
             )
-            if settings.google_api_key
-            and settings.google_api_key != "replace_with_your_google_ai_studio_key"
-            else None
-        )
+            for key in self.keys
+        ]
+        self.client = self.clients[0] if self.clients else None
 
-    async def reply(self, messages: list[dict[str, str]]) -> str:
-        if self.client is None:
+    @property
+    def active_clients(self) -> list[Any]:
+        """Returns the list of active clients; if client was mocked, preserves mock isolation."""
+        if self.client and (not self.clients or self.client is not self.clients[0]):
+            return [self.client]
+        return self.clients
+
+    def _build_system_instruction(self, context: str | None) -> str:
+        base = (
+            "You are Orbit, an autonomous, intelligent, and insightful AI workspace companion. "
+            "Your tone is thoughtful, sharp, articulate, and helpful. Always identify yourself as Orbit.\n"
+            "Format code, tables, and explanations cleanly using Markdown.\n"
+        )
+        if context:
+            base += (
+                f"\n--- VERIFIED DOCUMENT CONTEXT ---\n{context}\n--- END CONTEXT ---\n\n"
+                "INSTRUCTION:\n"
+                "1. Use the verified document context above to answer the user's questions accurately.\n"
+                "2. When extracting data or referencing facts, append a clickable citation like [Document: filename.pdf, Page X] or [Page X].\n"
+                "3. If the user asks about specific information from the document that is NOT in the context, "
+                "explicitly state: \"I cannot find the answer in the provided documents.\"\n"
+                "4. Do not hallucinate data that is not in the context."
+            )
+        return base
+
+    async def generate_with_failover(
+        self,
+        contents: list[types.Content],
+        config: types.GenerateContentConfig,
+    ):
+        """
+        Automatic Key Failover (Rotation Wrapper):
+        Tries primary GEMINI_ORCHESTRATOR_KEY first; on 429 quota exhaustion or 403 authorization
+        failures, seamlessly rotates to backup worker / orchestrator keys.
+        """
+        candidate_clients = self.active_clients
+
+        if not candidate_clients:
             raise HTTPException(
                 status_code=503,
-                detail="Gemini is not configured. Set GOOGLE_API_KEY in backend/.env.",
+                detail="Orbit is not configured. Set GOOGLE_API_KEY in backend/.env.",
             )
+
+        last_error = None
+        for i, client in enumerate(candidate_clients):
+            try:
+                response = await client.aio.models.generate_content(
+                    model=self.model,
+                    contents=contents,
+                    config=config,
+                )
+                return response
+            except errors.APIError as exc:
+                last_error = exc
+                logger.warning(
+                    "Key #%d failed (code=%s). Attempting automatic failover...",
+                    i + 1,
+                    exc.code,
+                )
+                if i + 1 < len(candidate_clients) and exc.code in (429, 401, 403):
+                    continue
+                if exc.code == 429:
+                    raise HTTPException(
+                        status_code=429,
+                        detail="Orbit request quota exceeded. Please try again later.",
+                    ) from exc
+                if exc.code in (401, 403):
+                    raise HTTPException(
+                        status_code=502,
+                        detail="API key was denied. Check API key and permissions in backend/.env.",
+                    ) from exc
+                if exc.code in (400, 404):
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Request rejected. Check the server's API key and model configuration in backend/.env.",
+                    ) from exc
+                raise HTTPException(
+                    status_code=502,
+                    detail="Orbit service is temporarily unavailable. Please try again.",
+                ) from exc
+            except (httpx.TransportError, TimeoutError, OSError) as exc:
+                last_error = exc
+                logger.warning("Key #%d network error (%s). Trying failover...", i + 1, type(exc).__name__)
+                if i + 1 < len(candidate_clients):
+                    continue
+                raise HTTPException(
+                    status_code=504,
+                    detail="Connection timed out. Please try again.",
+                ) from exc
+
+        if last_error:
+            raise HTTPException(
+                status_code=502,
+                detail="Orbit service is temporarily unavailable. All failover attempts exhausted.",
+            )
+        raise HTTPException(
+            status_code=503,
+            detail="Orbit is not configured. Set GOOGLE_API_KEY in backend/.env.",
+        )
+
+    async def reply(
+        self, messages: list[dict[str, str]], context: str | None = None
+    ) -> str:
         contents = [
             types.Content(
                 role="model" if message["role"] == "assistant" else "user",
@@ -44,57 +149,75 @@ class GeminiService:
             )
             for message in messages
         ]
-        try:
-            response = await self.client.aio.models.generate_content(
-                model=self.model,
-                contents=contents,
-                config=types.GenerateContentConfig(
-                    system_instruction=(
-                        "You are a helpful AI assistant. Give accurate, clear, "
-                        "friendly answers. Use Markdown when it improves readability. "
-                        "Be honest when you are uncertain."
-                    ),
-                    max_output_tokens=4096,
-                ),
-            )
-        except errors.APIError as exc:
-            logger.warning("Gemini API request failed (status %s)", exc.code)
-            if exc.code == 429:
-                raise HTTPException(
-                    status_code=429,
-                    detail="Google API quota exceeded. Please try again later.",
-                ) from exc
-            if exc.code in (401, 403):
-                raise HTTPException(
-                    status_code=502,
-                    detail=(
-                        "Google denied the API key. Create or select a Gemini API key "
-                        "in Google AI Studio, confirm the Generative Language API is "
-                        "enabled for its project, and check API-key restrictions."
-                    ),
-                ) from exc
-            if exc.code in (400, 404):
-                raise HTTPException(
-                    status_code=502,
-                    detail="Google rejected the request. Check the server's API key and model configuration.",
-                ) from exc
-            raise HTTPException(
-                status_code=502, detail="Google is unavailable. Please try again."
-            ) from exc
-        except (httpx.TransportError, TimeoutError, OSError) as exc:
-            logger.warning("Gemini connection failed (%s)", type(exc).__name__)
-            raise HTTPException(
-                status_code=504,
-                detail="The Google request timed out or could not connect. Please try again.",
-            ) from exc
+
+        system_instruction = self._build_system_instruction(context)
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            max_output_tokens=4096,
+        )
+
+        response = await self.generate_with_failover(contents, config)
         if not response.text or not response.text.strip():
             raise HTTPException(
                 status_code=502,
-                detail="Google returned no text (the response may have been blocked). Try rephrasing your message.",
+                detail="Orbit returned an empty reply. Please rephrase your message.",
             )
         return response.text.strip()
 
+    async def reply_stream(
+        self, messages: list[dict[str, str]], context: str | None = None
+    ) -> AsyncIterator[str]:
+        candidate_clients = self.active_clients
+
+        if not candidate_clients:
+            raise HTTPException(
+                status_code=503,
+                detail="Orbit is not configured. Set GOOGLE_API_KEY in backend/.env.",
+            )
+
+        contents = [
+            types.Content(
+                role="model" if message["role"] == "assistant" else "user",
+                parts=[types.Part(text=message["content"])],
+            )
+            for message in messages
+        ]
+
+        system_instruction = self._build_system_instruction(context)
+        config = types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            max_output_tokens=4096,
+        )
+
+        # Attempt stream with failover across clients
+        streamed_any = False
+        for i, client in enumerate(candidate_clients):
+            try:
+                response_stream = await client.aio.models.generate_content_stream(
+                    model=self.model,
+                    contents=contents,
+                    config=config,
+                )
+                async for chunk in response_stream:
+                    if chunk.text:
+                        streamed_any = True
+                        yield chunk.text
+                return
+            except Exception as exc:
+                logger.warning("Streaming with key #%d failed (%s)", i + 1, exc)
+                if streamed_any:
+                    # If tokens were already sent to client, don't restart full text stream
+                    return
+                continue
+
+        # If streaming attempts failed before any token emitted, fall back to complete generation
+        fallback = await self.reply(messages, context=context)
+        yield fallback
+
     async def close(self) -> None:
-        if self.client is not None:
-            await self.client.aio.aclose()
-            self.client.close()
+        for client in self.clients:
+            try:
+                await client.aio.aclose()
+                client.close()
+            except Exception:
+                pass
