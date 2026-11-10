@@ -17,7 +17,7 @@ class FakeGemini:
         self.calls = []
         self.failure = None
 
-    async def reply(self, messages):
+    async def reply(self, messages, *args, **kwargs):
         self.calls.append(messages)
         if self.failure:
             raise self.failure
@@ -256,7 +256,7 @@ def test_concurrent_send_and_delete_are_rejected(setup):
     conversation_id = new_conversation(client)
     entered, release = threading.Event(), threading.Event()
 
-    async def delayed_reply(messages):
+    async def delayed_reply(messages, *args, **kwargs):
         entered.set()
         await asyncio.to_thread(release.wait, 10)
         return "Finished"

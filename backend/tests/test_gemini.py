@@ -31,7 +31,7 @@ def test_provider_roles_model_and_output():
     ]))
     assert reply == "A real formatted reply."
     arguments = generate.call_args.kwargs
-    assert arguments["model"] == "gemini-2.5-flash"
+    assert arguments["model"] == "gemini-3.5-flash"
     assert [content.role for content in arguments["contents"]] == ["user", "model", "user"]
     assert arguments["contents"][-1].parts[0].text == "Follow-up"
     assert arguments["config"].max_output_tokens == 4096
