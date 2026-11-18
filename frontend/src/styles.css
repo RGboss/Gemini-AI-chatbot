@@ -1312,6 +1312,34 @@ svg {
   color: #f87171 !important;
 }
 
+.sidebar-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 12px 6px;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+}
+
+.sidebar-search svg {
+  color: var(--text-muted);
+}
+
+.sidebar-search input {
+  background: transparent;
+  border: none;
+  color: #f8fafc;
+  font-size: 12px;
+  width: 100%;
+  outline: none;
+}
+
+.sidebar-search input::placeholder {
+  color: #64748b;
+}
+
 /* Voice Microphone Button & Pulsing Animation */
 .voice-btn {
   color: var(--text-muted);

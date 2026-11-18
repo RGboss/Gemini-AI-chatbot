@@ -432,6 +432,7 @@ function Chat({ user, onSignOut }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Streaming & RAG states
   const [pendingUserText, setPendingUserText] = useState('');
@@ -835,6 +836,9 @@ function Chat({ user, onSignOut }) {
   }
 
   const active = conversations.find((item) => item.id === activeId);
+  const filteredConversations = conversations.filter((item) =>
+    searchQuery ? item.title.toLowerCase().includes(searchQuery.toLowerCase()) : true
+  );
   const empty = messages.length === 0 && !pendingUserText && !streamingText;
 
   return (
@@ -864,20 +868,31 @@ function Chat({ user, onSignOut }) {
           <span>New Session</span>
         </button>
 
+        <div className="sidebar-search">
+          <Icon name="search" size={13} />
+          <input
+            type="text"
+            placeholder="Search sessions..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            aria-label="Filter conversations"
+          />
+        </div>
+
         <div className="history-label">
           <span>SESSIONS</span>
-          <span className="count-pill">{conversations.length}</span>
+          <span className="count-pill">{filteredConversations.length}</span>
         </div>
 
         <nav className="history" aria-label="Saved sessions">
           {loading ? (
             <p className="history-empty">Loading sessions...</p>
-          ) : conversations.length === 0 ? (
+          ) : filteredConversations.length === 0 ? (
             <p className="history-empty">
-              No sessions yet.<br />Initiate a dialogue or upload a document to begin.
+              {searchQuery ? `No sessions matching "${searchQuery}".` : 'No sessions yet.'}
             </p>
           ) : (
-            conversations.map((item) => (
+            filteredConversations.map((item) => (
               <div
                 className={`history-row ${activeId === item.id ? 'selected' : ''}`}
                 key={item.id}
@@ -1245,8 +1260,8 @@ function Chat({ user, onSignOut }) {
                 </div>
 
                 <div className="composer-actions">
-                  <span className="char-count">
-                    {draft.length > 6000 ? `${draft.length}/8000` : ''}
+                  <span className="char-count" title="Estimated input prompt tokens">
+                    ⚡ ~{Math.max(Math.ceil(draft.length / 4), 0)} tok {draft.length > 5000 ? `(${draft.length}/8000)` : ''}
                   </span>
                   <button
                     type="button"
