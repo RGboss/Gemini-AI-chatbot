@@ -149,6 +149,31 @@ class RAGService:
 
         return query
 
+    async def generate_hypothetical_embedding(self, query: str) -> list[float] | None:
+        """
+        HyDE (Hypothetical Document Embeddings):
+        Generates a concise hypothetical answer snippet to enrich semantic vector search.
+        """
+        if not self.worker_clients:
+            return None
+        prompt = (
+            f"Provide a 1-2 sentence direct factual statement that answers: '{query}'. "
+            "Respond with only the factual content, no explanations or pleasantries."
+        )
+        for client in self.worker_clients:
+            try:
+                res = await client.aio.models.generate_content(
+                    model=self.worker_audit_model,
+                    contents=prompt,
+                )
+                if res.text and res.text.strip():
+                    emb_res = await self.embed_with_failover(res.text.strip())
+                    return emb_res.embeddings[0].values
+            except Exception as exc:
+                logger.debug("HyDE generation attempt skipped: %s", exc)
+                continue
+        return None
+
     async def ingest_document(
         self,
         filename: str,
@@ -240,6 +265,12 @@ class RAGService:
         try:
             query_res = await self.embed_with_failover(expanded_query)
             query_vector = query_res.embeddings[0].values
+
+            # HyDE Enhancement (Hypothetical Document Embeddings for conceptual queries)
+            if len(query.split()) >= 4:
+                hyde_vec = await self.generate_hypothetical_embedding(query)
+                if hyde_vec and len(hyde_vec) == len(query_vector):
+                    query_vector = [0.75 * q + 0.25 * h for q, h in zip(query_vector, hyde_vec)]
         except Exception as exc:
             logger.warning("Failed to embed query: %s", exc)
             return []

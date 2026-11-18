@@ -55,3 +55,13 @@ def initialize(path: Path) -> None:
                 ON messages(conversation_id, id);
             """
         )
+
+        # Migration: Ensure token tracking columns exist on messages table
+        cursor = db.execute("PRAGMA table_info(messages)")
+        existing_cols = {row["name"] for row in cursor.fetchall()}
+        if "prompt_tokens" not in existing_cols:
+            db.execute("ALTER TABLE messages ADD COLUMN prompt_tokens INTEGER DEFAULT 0")
+        if "completion_tokens" not in existing_cols:
+            db.execute("ALTER TABLE messages ADD COLUMN completion_tokens INTEGER DEFAULT 0")
+        if "total_tokens" not in existing_cols:
+            db.execute("ALTER TABLE messages ADD COLUMN total_tokens INTEGER DEFAULT 0")

@@ -134,3 +134,27 @@ def test_document_deletion_and_summarization(feature_app):
     # Confirm it is no longer listed in active session documents
     docs_after = client.get(f"/api/conversations/{conv_id}/documents")
     assert "orbit_arch.txt" not in docs_after.json()["documents"]
+
+
+def test_token_tracking_and_analytics(feature_app):
+    client, _, _ = feature_app
+    register_and_login(client, "charlie")
+    conv_id = create_conversation(client)
+
+    # Send a message to populate tokens
+    res = client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={"content": "What is the token efficiency of RAG systems?"},
+    )
+    assert res.status_code == 200
+
+    # Query token analytics endpoint
+    analytics = client.get("/api/analytics/tokens")
+    assert analytics.status_code == 200
+    data = analytics.json()
+    assert data["total_messages"] >= 2
+    assert data["total_tokens"] > 0
+    assert data["total_prompt_tokens"] > 0
+    assert data["total_completion_tokens"] > 0
+    assert "estimated_tokens_saved" in data
+    assert "average_tokens_per_message" in data

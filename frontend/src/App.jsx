@@ -128,6 +128,27 @@ function Icon({ name, size = 20 }) {
         <line x1="21" y1="21" x2="16.65" y2="16.65" />
       </>
     ),
+    mic: (
+      <>
+        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+        <line x1="12" y1="19" x2="12" y2="23" />
+        <line x1="8" y1="23" x2="16" y2="23" />
+      </>
+    ),
+    volume: (
+      <>
+        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+        <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" />
+      </>
+    ),
+    gauge: (
+      <>
+        <path d="M12 2v4M4.93 4.93l2.83 2.83M2 12h4M20 12h2M19.07 4.93l-2.83 2.83" />
+        <circle cx="12" cy="14" r="8" />
+        <line x1="12" y1="14" x2="15" y2="11" />
+      </>
+    ),
   };
   return (
     <svg
@@ -427,11 +448,90 @@ function Chat({ user, onSignOut }) {
   // Quick action feedback
   const [copiedId, setCopiedId] = useState(null);
 
+  // Token Efficiency & Voice states
+  const [tokenStats, setTokenStats] = useState(null);
+  const [showAnalytics, setShowAnalytics] = useState(false);
+  const [analyticsData, setAnalyticsData] = useState(null);
+  const [isListening, setIsListening] = useState(false);
+  const [speakingId, setSpeakingId] = useState(null);
+  const recognitionRef = useRef(null);
+
   const bottomRef = useRef(null);
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
   const operationRef = useRef(false);
+
+  async function toggleAnalyticsModal() {
+    if (!showAnalytics) {
+      try {
+        const data = await api('/analytics/tokens');
+        setAnalyticsData(data);
+      } catch (err) {
+        console.error('Failed to load token analytics', err);
+      }
+    }
+    setShowAnalytics(!showAnalytics);
+  }
+
+  function toggleVoiceInput() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setError('Speech recognition is not supported in this browser. Please use Chrome, Edge, or Safari.');
+      return;
+    }
+
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      recognition.onstart = () => setIsListening(true);
+      recognition.onresult = (event) => {
+        let transcript = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript;
+        }
+        setDraft((prev) => (prev ? `${prev} ${transcript}` : transcript));
+      };
+      recognition.onerror = () => setIsListening(false);
+      recognition.onend = () => setIsListening(false);
+
+      recognitionRef.current = recognition;
+      recognition.start();
+    } catch {
+      setIsListening(false);
+    }
+  }
+
+  function toggleSpeech(text, id) {
+    if (!('speechSynthesis' in window)) return;
+    if (speakingId === id) {
+      window.speechSynthesis.cancel();
+      setSpeakingId(null);
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const cleanText = text
+      .replace(/```[\s\S]*?```/g, 'Code block omitted.')
+      .replace(/[#*_`~>\[\]\(\)]/g, '')
+      .trim();
+
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    utterance.rate = 1.05;
+    utterance.pitch = 1.0;
+    utterance.onend = () => setSpeakingId(null);
+    utterance.onerror = () => setSpeakingId(null);
+    setSpeakingId(id);
+    window.speechSynthesis.speak(utterance);
+  }
 
   function handleError(err) {
     if (err.status === 401) onSignOut();
@@ -634,6 +734,8 @@ function Chat({ user, onSignOut }) {
               if (data.type === 'token') {
                 accumulated += data.token;
                 setStreamingText(accumulated);
+              } else if (data.type === 'usage') {
+                setTokenStats(data);
               } else if (data.type === 'done') {
                 setMessages((items) => [...items, ...data.messages]);
                 setConversations((items) => [
@@ -882,6 +984,18 @@ function Chat({ user, onSignOut }) {
                 </button>
               )}
 
+              {tokenStats && (
+                <button
+                  type="button"
+                  className="header-action-button token-badge"
+                  onClick={toggleAnalyticsModal}
+                  title="Click to view Token Efficiency Analytics"
+                >
+                  <Icon name="gauge" size={13} />
+                  <span>{tokenStats.total_tokens || 0} tok</span>
+                </button>
+              )}
+
               <span className="orbit-badge">
                 <span className="status-dot live" />
                 Orbit Core v2.5
@@ -945,6 +1059,8 @@ function Chat({ user, onSignOut }) {
                     onCopy={copyToClipboard}
                     copied={copiedId === message.id}
                     onRegenerate={handleRegenerate}
+                    onSpeak={toggleSpeech}
+                    speaking={speakingId === message.id}
                   />
                 ))}
 
@@ -1133,6 +1249,16 @@ function Chat({ user, onSignOut }) {
                     {draft.length > 6000 ? `${draft.length}/8000` : ''}
                   </span>
                   <button
+                    type="button"
+                    className={`icon-button voice-btn ${isListening ? 'listening-pulse' : ''}`}
+                    onClick={toggleVoiceInput}
+                    disabled={busy || loading || uploading}
+                    title={isListening ? 'Listening... click to stop' : 'Voice input (Speech to text)'}
+                    aria-label="Voice input"
+                  >
+                    <Icon name="mic" size={17} />
+                  </button>
+                  <button
                     className="send-button"
                     aria-label="Send message"
                     disabled={!draft.trim() || busy || loading || uploading}
@@ -1156,6 +1282,74 @@ function Chat({ user, onSignOut }) {
             onDelete={handleDeleteDocument}
           />
         )}
+
+        {showAnalytics && (
+          <div className="analytics-backdrop" onClick={() => setShowAnalytics(false)}>
+            <div className="analytics-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="analytics-header">
+                <div className="analytics-title">
+                  <Icon name="gauge" size={18} />
+                  <span>Token Efficiency & Usage Analytics</span>
+                </div>
+                <button
+                  className="icon-button"
+                  onClick={() => setShowAnalytics(false)}
+                  aria-label="Close analytics"
+                >
+                  <Icon name="close" size={16} />
+                </button>
+              </div>
+
+              <div className="analytics-grid">
+                <div className="analytics-card highlight">
+                  <div className="analytics-card-label">Estimated Tokens Saved</div>
+                  <div className="analytics-card-val">
+                    {(analyticsData?.estimated_tokens_saved || 0).toLocaleString()}
+                  </div>
+                </div>
+
+                <div className="analytics-card">
+                  <div className="analytics-card-label">Total Tokens Billed</div>
+                  <div className="analytics-card-val">
+                    {(analyticsData?.total_tokens || 0).toLocaleString()}
+                  </div>
+                </div>
+
+                <div className="analytics-card">
+                  <div className="analytics-card-label">Prompt Input Tokens</div>
+                  <div className="analytics-card-val">
+                    {(analyticsData?.total_prompt_tokens || 0).toLocaleString()}
+                  </div>
+                </div>
+
+                <div className="analytics-card">
+                  <div className="analytics-card-label">Completion Tokens</div>
+                  <div className="analytics-card-val">
+                    {(analyticsData?.total_completion_tokens || 0).toLocaleString()}
+                  </div>
+                </div>
+
+                <div className="analytics-card">
+                  <div className="analytics-card-label">Total Messages</div>
+                  <div className="analytics-card-val">
+                    {analyticsData?.total_messages || 0}
+                  </div>
+                </div>
+
+                <div className="analytics-card">
+                  <div className="analytics-card-label">Avg Tokens / Turn</div>
+                  <div className="analytics-card-val">
+                    {analyticsData?.average_tokens_per_message || 0}
+                  </div>
+                </div>
+              </div>
+
+              <div className="analytics-footer-note">
+                Token optimization via Agentic RAG routing, HyDE semantic queries, and sliding window context compression.
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1171,6 +1365,8 @@ function MessageBubble({
   onCopy,
   copied,
   onRegenerate,
+  onSpeak,
+  speaking,
 }) {
   const assistant = role === 'assistant';
   return (
@@ -1187,6 +1383,17 @@ function MessageBubble({
 
           {assistant && (
             <div className="message-tooltips">
+              {onSpeak && (
+                <button
+                  type="button"
+                  className={`action-pill ${speaking ? 'active' : ''}`}
+                  onClick={() => onSpeak(content, id)}
+                  title={speaking ? 'Stop speech readout' : 'Listen with natural speech'}
+                >
+                  <Icon name="volume" size={12} />
+                  <span>{speaking ? 'Stop' : 'Listen'}</span>
+                </button>
+              )}
               <button
                 type="button"
                 className="action-pill"

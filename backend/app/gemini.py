@@ -38,6 +38,12 @@ class GeminiService:
             for key in self.keys
         ]
         self.client = self.clients[0] if self.clients else None
+        self.last_usage: dict[str, int] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cached_tokens": 0,
+        }
 
     @property
     def active_clients(self) -> list[Any]:
@@ -162,6 +168,24 @@ class GeminiService:
                 status_code=502,
                 detail="Orbit returned an empty reply. Please rephrase your message.",
             )
+
+        meta = getattr(response, "usage_metadata", None)
+        if meta:
+            self.last_usage = {
+                "prompt_tokens": getattr(meta, "prompt_token_count", 0) or 0,
+                "completion_tokens": getattr(meta, "candidates_token_count", 0) or 0,
+                "total_tokens": getattr(meta, "total_token_count", 0) or 0,
+                "cached_tokens": getattr(meta, "cached_content_token_count", 0) or 0,
+            }
+        else:
+            prompt_chars = sum(len(m.get("content", "")) for m in messages) + (len(context or "") if context else 0)
+            comp_chars = len(response.text.strip())
+            self.last_usage = {
+                "prompt_tokens": max(prompt_chars // 4, 1),
+                "completion_tokens": max(comp_chars // 4, 1),
+                "total_tokens": max((prompt_chars + comp_chars) // 4, 2),
+                "cached_tokens": 0,
+            }
         return response.text.strip()
 
     async def reply_stream(
@@ -191,6 +215,7 @@ class GeminiService:
 
         # Attempt stream with failover across clients
         streamed_any = False
+        captured_meta = None
         for i, client in enumerate(candidate_clients):
             try:
                 response_stream = await client.aio.models.generate_content_stream(
@@ -199,9 +224,28 @@ class GeminiService:
                     config=config,
                 )
                 async for chunk in response_stream:
+                    chunk_meta = getattr(chunk, "usage_metadata", None)
+                    if chunk_meta:
+                        captured_meta = chunk_meta
                     if chunk.text:
                         streamed_any = True
                         yield chunk.text
+
+                if captured_meta:
+                    self.last_usage = {
+                        "prompt_tokens": getattr(captured_meta, "prompt_token_count", 0) or 0,
+                        "completion_tokens": getattr(captured_meta, "candidates_token_count", 0) or 0,
+                        "total_tokens": getattr(captured_meta, "total_token_count", 0) or 0,
+                        "cached_tokens": getattr(captured_meta, "cached_content_token_count", 0) or 0,
+                    }
+                else:
+                    prompt_chars = sum(len(m.get("content", "")) for m in messages) + (len(context or "") if context else 0)
+                    self.last_usage = {
+                        "prompt_tokens": max(prompt_chars // 4, 1),
+                        "completion_tokens": max(len(messages[-1]["content"]) // 4, 1),
+                        "total_tokens": max(prompt_chars // 4, 1) + max(len(messages[-1]["content"]) // 4, 1),
+                        "cached_tokens": 0,
+                    }
                 return
             except Exception as exc:
                 logger.warning("Streaming with key #%d failed (%s)", i + 1, exc)

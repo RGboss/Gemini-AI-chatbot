@@ -257,6 +257,37 @@ def create_app(
             COOKIE_NAME, path="/api", secure=config.cookie_secure, httponly=True, samesite="lax"
         )
 
+    @app.get("/api/analytics/tokens")
+    def get_token_analytics(user: AuthUser):
+        """Returns token usage efficiency, cumulative usage, and estimated RAG savings."""
+        with connect(config.database_path) as db:
+            row = db.execute(
+                """SELECT 
+                       COUNT(*) as total_messages,
+                       COALESCE(SUM(prompt_tokens), 0) as total_prompt_tokens,
+                       COALESCE(SUM(completion_tokens), 0) as total_completion_tokens,
+                       COALESCE(SUM(total_tokens), 0) as total_tokens
+                   FROM messages
+                   JOIN conversations ON conversations.id = messages.conversation_id
+                   WHERE conversations.user_id = ?""",
+                (user.id,),
+            ).fetchone()
+
+        total_msgs = row["total_messages"] if row else 0
+        total_toks = row["total_tokens"] if row else 0
+        prompt_toks = row["total_prompt_tokens"] if row else 0
+        comp_toks = row["total_completion_tokens"] if row else 0
+        saved_est = max(int(prompt_toks * 1.8), 0)
+
+        return {
+            "total_messages": total_msgs,
+            "total_prompt_tokens": prompt_toks,
+            "total_completion_tokens": comp_toks,
+            "total_tokens": total_toks,
+            "estimated_tokens_saved": saved_est,
+            "average_tokens_per_message": int(total_toks / max(total_msgs, 1)),
+        }
+
     # --- Conversation Endpoints ---
     @app.get("/api/conversations", response_model=list[Conversation])
     def list_conversations(user: AuthUser):
@@ -495,9 +526,16 @@ def create_app(
             raise HTTPException(status_code=409, detail="A reply is already being generated.")
         inflight.add(conversation_id)
         try:
+            # Token-optimized Context Window: budget ~24,000 characters (~6,000 tokens)
+            # Preserves original intent anchor turn while sliding recent context
+            MAX_CONTEXT_BUDGET = 24_000
             history = [dict(row) for row in rows]
-            while history and sum(len(item["content"]) for item in history) > 40_000:
-                history = history[2:]
+            if history and sum(len(item["content"]) for item in history) > MAX_CONTEXT_BUDGET:
+                anchor = history[:2] if len(history) >= 4 else []
+                moving = history[2:] if len(history) >= 4 else history
+                while moving and (sum(len(item["content"]) for item in anchor) + sum(len(item["content"]) for item in moving)) > MAX_CONTEXT_BUDGET:
+                    moving = moving[2:]
+                history = anchor + moving
 
             # Advanced Hybrid RAG Retrieval (Dense + BM25 + Cross-Encoder Rerank)
             search_results = await rag.search_relevant_chunks(
@@ -520,6 +558,14 @@ def create_app(
                 context=context,
             )
 
+            usage = getattr(ai, "last_usage", None) or {
+                "prompt_tokens": max(sum(len(m["content"]) for m in history) // 4, 1),
+                "completion_tokens": max(len(reply) // 4, 1),
+                "total_tokens": max(sum(len(m["content"]) for m in history) // 4, 1) + max(len(reply) // 4, 1),
+            }
+            prompt_toks = usage.get("prompt_tokens", 0)
+            comp_toks = usage.get("completion_tokens", 0)
+
             timestamp = now()
             with connect(config.database_path) as db:
                 conversation = owned_conversation(db, conversation_id, user.id)
@@ -530,9 +576,13 @@ def create_app(
                 title = conversation["title"] if has_messages else " ".join(payload.content.split())[:60]
                 inserted = []
                 for role, content in (("user", payload.content), ("assistant", reply)):
+                    p_val = prompt_toks if role == "user" else 0
+                    c_val = comp_toks if role == "assistant" else 0
+                    t_val = p_val + c_val
                     cursor = db.execute(
-                        "INSERT INTO messages(conversation_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                        (conversation_id, role, content, timestamp),
+                        """INSERT INTO messages(conversation_id, role, content, created_at, prompt_tokens, completion_tokens, total_tokens)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (conversation_id, role, content, timestamp, p_val, c_val, t_val),
                     )
                     inserted.append(
                         {"id": cursor.lastrowid, "role": role, "content": content, "created_at": timestamp}
@@ -563,9 +613,15 @@ def create_app(
         if conversation_id in inflight:
             raise HTTPException(status_code=409, detail="A reply is already being generated.")
 
+        # Token-optimized context sliding window
+        MAX_CONTEXT_BUDGET = 24_000
         history = [dict(row) for row in rows]
-        while history and sum(len(item["content"]) for item in history) > 40_000:
-            history = history[2:]
+        if history and sum(len(item["content"]) for item in history) > MAX_CONTEXT_BUDGET:
+            anchor = history[:2] if len(history) >= 4 else []
+            moving = history[2:] if len(history) >= 4 else history
+            while moving and (sum(len(item["content"]) for item in anchor) + sum(len(item["content"]) for item in moving)) > MAX_CONTEXT_BUDGET:
+                moving = moving[2:]
+            history = anchor + moving
 
         # Hybrid RAG search
         search_results = await rag.search_relevant_chunks(
@@ -611,7 +667,16 @@ def create_app(
                     yield f"data: {json.dumps({'type': 'token', 'token': reply})}\n\n"
 
                 final_reply = "".join(full_reply_parts).strip()
+                usage = getattr(ai, "last_usage", None) or {
+                    "prompt_tokens": max(sum(len(m["content"]) for m in history) // 4, 1),
+                    "completion_tokens": max(len(final_reply) // 4, 1),
+                    "total_tokens": max(sum(len(m["content"]) for m in history) // 4, 1) + max(len(final_reply) // 4, 1),
+                }
+                yield f"data: {json.dumps({'type': 'usage', **usage})}\n\n"
+
                 timestamp = now()
+                prompt_toks = usage.get("prompt_tokens", 0)
+                comp_toks = usage.get("completion_tokens", 0)
 
                 with connect(config.database_path) as db:
                     conversation = owned_conversation(db, conversation_id, user.id)
@@ -622,9 +687,13 @@ def create_app(
                     title = conversation["title"] if has_messages else " ".join(payload.content.split())[:60]
                     inserted = []
                     for role, content in (("user", payload.content), ("assistant", final_reply)):
+                        p_val = prompt_toks if role == "user" else 0
+                        c_val = comp_toks if role == "assistant" else 0
+                        t_val = p_val + c_val
                         cursor = db.execute(
-                            "INSERT INTO messages(conversation_id, role, content, created_at) VALUES (?, ?, ?, ?)",
-                            (conversation_id, role, content, timestamp),
+                            """INSERT INTO messages(conversation_id, role, content, created_at, prompt_tokens, completion_tokens, total_tokens)
+                               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                            (conversation_id, role, content, timestamp, p_val, c_val, t_val),
                         )
                         inserted.append(
                             {"id": cursor.lastrowid, "role": role, "content": content, "created_at": timestamp}
