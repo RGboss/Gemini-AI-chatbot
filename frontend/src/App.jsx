@@ -473,6 +473,7 @@ function Chat({ user, onSignOut }) {
   const [documents, setDocuments] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [uploadBanner, setUploadBanner] = useState('');
+  const [lastConfidence, setLastConfidence] = useState(null);
 
   // Split-screen viewer state
   const [viewerOpen, setViewerOpen] = useState(false);
@@ -719,6 +720,7 @@ function Chat({ user, onSignOut }) {
     setError('');
     setPendingUserText(content);
     setStreamingText('');
+    setLastConfidence(null);
     setDraft('');
 
     let id = activeId;
@@ -768,6 +770,10 @@ function Chat({ user, onSignOut }) {
               if (data.type === 'token') {
                 accumulated += data.token;
                 setStreamingText(accumulated);
+              } else if (data.type === 'sources') {
+                if (data.confidence) {
+                  setLastConfidence(data.confidence);
+                }
               } else if (data.type === 'usage') {
                 setTokenStats(data);
               } else if (data.type === 'done') {
@@ -1130,6 +1136,14 @@ function Chat({ user, onSignOut }) {
                       <div className="message-author">
                         <span className="author-name">Orbit</span>
                         <span className="ai-tag live-stream">Streaming</span>
+                        {lastConfidence && (
+                          <span
+                            className={`confidence-pill ${lastConfidence.level.toLowerCase()}`}
+                            title={`Grounding confidence: ${lastConfidence.percentage}% based on verified source affinity`}
+                          >
+                            {lastConfidence.percentage}% Grounded
+                          </span>
+                        )}
                       </div>
                       <div className="message-content">
                         <Markdown
