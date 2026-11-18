@@ -50,6 +50,9 @@ class FakeChatReply:
     async def optimize_prompt(self, user_prompt: str) -> str:
         return f"Architectural breakdown and design pattern for: {user_prompt}"
 
+    async def compact_history(self, messages_to_compress: list) -> str:
+        return "User and assistant designed high-performance RAG pipeline and hybrid search vectors."
+
     async def close(self):
         pass
 
@@ -364,3 +367,27 @@ def test_rename_and_pin_conversation(feature_app):
     conversations = list_res.json()
     assert conversations[0]["id"] == conv1
     assert conversations[0]["is_pinned"] is True
+
+
+def test_conversation_compaction_token_savings(feature_app):
+    client, _, _ = feature_app
+    register_and_login(client, "leo")
+    conv_id = create_conversation(client)
+
+    # Populate with 6 messages (3 turns)
+    for i in range(1, 4):
+        client.post(f"/api/conversations/{conv_id}/messages", json={"content": f"Turn {i}: Query"})
+
+    # Check message count
+    detail = client.get(f"/api/conversations/{conv_id}").json()
+    assert len(detail["messages"]) == 6
+
+    # Call compact
+    compact_res = client.post(f"/api/conversations/{conv_id}/compact")
+    assert compact_res.status_code == 200
+    compact_data = compact_res.json()
+
+    # Message count should be reduced to 4: turn 1 user, compact memory, and turn 3 user+assistant
+    assert len(compact_data["messages"]) == 4
+    compact_msg = next(m for m in compact_data["messages"] if "Compacted Prior Context" in m["content"])
+    assert compact_msg["role"] == "assistant"

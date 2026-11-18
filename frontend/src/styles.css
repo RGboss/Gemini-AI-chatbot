@@ -2362,3 +2362,14 @@ svg {
   border-radius: 6px;
   background: #ffffff;
 }
+
+.header-action-button.compact-btn {
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.25);
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.header-action-button.compact-btn:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.18);
+  border-color: #38bdf8;
+}

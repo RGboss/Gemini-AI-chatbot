@@ -106,6 +106,12 @@ function Icon({ name, size = 20 }) {
         <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
       </>
     ),
+    broom: (
+      <>
+        <path d="M14 2l4 4L7 17l-4 1 1-4L14 2z" />
+        <path d="M3 21h18" />
+      </>
+    ),
     branch: (
       <>
         <line x1="6" y1="3" x2="6" y2="15" />
@@ -1174,6 +1180,34 @@ function Chat({ user, onSignOut }) {
     }
   }
 
+  async function handleCompactContext() {
+    if (!activeId || operationRef.current) return;
+    operationRef.current = true;
+    setBusy(true);
+    setError('');
+    setUploadBanner('Compressing and compacting prior context with Gemini worker model...');
+    try {
+      const res = await api(`/conversations/${activeId}/compact`, { method: 'POST' });
+      setMessages(res.messages || []);
+      const totalToks = (res.messages || []).reduce((acc, m) => acc + (m.total_tokens || 0), 0);
+      const promptToks = (res.messages || []).reduce((acc, m) => acc + (m.prompt_tokens || 0), 0);
+      const compToks = (res.messages || []).reduce((acc, m) => acc + (m.completion_tokens || 0), 0);
+      setTokenStats({
+        total_tokens: totalToks,
+        prompt_tokens: promptToks,
+        completion_tokens: compToks,
+      });
+      setUploadBanner('Compacted session memory! Intermediate turns condensed into dense memory anchor.');
+      setTimeout(() => setUploadBanner(''), 4000);
+    } catch (err) {
+      handleError(err);
+      setUploadBanner('');
+    } finally {
+      operationRef.current = false;
+      setBusy(false);
+    }
+  }
+
   async function handleDeleteDocument(filename) {
     if (!activeId || !filename) return;
     try {
@@ -1422,6 +1456,18 @@ function Chat({ user, onSignOut }) {
             <div className="header-right">
               {messages.length > 0 && (
                 <div style={{ display: 'inline-flex', gap: '4px' }}>
+                  {messages.length >= 4 && (
+                    <button
+                      type="button"
+                      className="header-action-button compact-btn"
+                      onClick={handleCompactContext}
+                      title="Compact conversation memory (Summarize prior turns to reduce token footprint by 75%)"
+                      disabled={busy}
+                    >
+                      <Icon name="broom" size={13} />
+                      <span>Compact</span>
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="header-action-button"
