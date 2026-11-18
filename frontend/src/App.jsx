@@ -30,6 +30,14 @@ const suggestions = [
   },
 ];
 
+const PERSONA_PRESETS = [
+  { label: 'General Orbit', prompt: '' },
+  { label: 'System Architect', prompt: 'Adopt senior software architect persona. Emphasize modular design, scalability, clean code, and latency trade-offs.' },
+  { label: 'Security Auditor', prompt: 'Adopt senior cybersecurity auditor persona. Scrutinize code for CVEs, injection, and security vulnerabilities.' },
+  { label: 'Research Analyst', prompt: 'Adopt research scientist persona. Cite foundational principles, theoretical trade-offs, and empirical benchmarks.' },
+  { label: 'Executive Brief', prompt: 'Provide high-level executive summaries with key takeaways, bulleted impact points, and risk trade-offs.' },
+];
+
 function Icon({ name, size = 20 }) {
   const paths = {
     orbit: (
@@ -533,6 +541,41 @@ function Chat({ user, onSignOut }) {
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
   const operationRef = useRef(false);
+
+  const [optimizing, setOptimizing] = useState(false);
+
+  async function handleOptimizePrompt() {
+    if (!draft.trim() || optimizing) return;
+    setOptimizing(true);
+    try {
+      const res = await api('/prompt/optimize', {
+        method: 'POST',
+        body: JSON.stringify({ prompt: draft }),
+      });
+      if (res.optimized) {
+        setDraft(res.optimized);
+      }
+    } catch (err) {
+      handleError(err);
+    } finally {
+      setOptimizing(false);
+    }
+  }
+
+  async function handleSelectPersona(promptText) {
+    if (!activeId) return;
+    try {
+      await api(`/conversations/${activeId}/persona`, {
+        method: 'PATCH',
+        body: JSON.stringify({ system_prompt: promptText }),
+      });
+      setConversations((items) =>
+        items.map((c) => (c.id === activeId ? { ...c, system_prompt: promptText } : c))
+      );
+    } catch (err) {
+      handleError(err);
+    }
+  }
 
   async function toggleAnalyticsModal() {
     if (!showAnalytics) {
@@ -1057,6 +1100,23 @@ function Chat({ user, onSignOut }) {
                 <span className="session-dot" />
                 <span>{active?.title || 'Orbit Workspace'}</span>
               </div>
+              {active && (
+                <div className="persona-selector-wrap">
+                  <Icon name="sparkles" size={13} />
+                  <select
+                    className="persona-select"
+                    value={active.system_prompt || ''}
+                    onChange={(e) => handleSelectPersona(e.target.value)}
+                    title="Set custom system persona for this orbit session"
+                  >
+                    {PERSONA_PRESETS.map((p) => (
+                      <option key={p.label} value={p.prompt}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
 
             <div className="header-right">
@@ -1380,6 +1440,16 @@ function Chat({ user, onSignOut }) {
                   <span className="char-count" title="Estimated input prompt tokens">
                     ⚡ ~{Math.max(Math.ceil(draft.length / 4), 0)} tok {draft.length > 5000 ? `(${draft.length}/8000)` : ''}
                   </span>
+                  <button
+                    type="button"
+                    className={`icon-button polish-prompt-btn ${optimizing ? 'is-optimizing' : ''}`}
+                    onClick={handleOptimizePrompt}
+                    disabled={!draft.trim() || busy || loading || uploading || optimizing}
+                    title="✨ Enhance Prompt (Rewrite with high-precision prompt engineering)"
+                    aria-label="Enhance prompt"
+                  >
+                    <Icon name="sparkles" size={17} />
+                  </button>
                   <button
                     type="button"
                     className={`icon-button voice-btn ${isListening ? 'listening-pulse' : ''}`}

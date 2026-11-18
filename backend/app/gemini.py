@@ -259,6 +259,30 @@ class GeminiService:
         fallback = await self.reply(messages, context=context)
         yield fallback
 
+    async def optimize_prompt(self, user_prompt: str) -> str:
+        """Uses LLM to transform a raw user query into a structured, unambiguous prompt."""
+        client = self.active_clients[0] if self.active_clients else None
+        clean_fallback = f"Provide a detailed, step-by-step technical explanation and practical code examples for: {user_prompt}"
+        if not client:
+            return clean_fallback
+        try:
+            req = (
+                "You are an expert prompt engineer. Rewrite the following user prompt to be crystal-clear, "
+                "well-structured, and highly effective for an AI LLM, removing ambiguities without adding fluff. "
+                "Return ONLY the rewritten prompt with no commentary.\n\n"
+                f"Original Prompt: {user_prompt}"
+            )
+            res = await client.aio.models.generate_content(
+                model=self.model,
+                contents=[types.Content(role="user", parts=[types.Part(text=req)])],
+                config=types.GenerateContentConfig(max_output_tokens=300, temperature=0.4),
+            )
+            enhanced = res.text.strip().strip('"\'`') if res.text else ""
+            return enhanced if enhanced else clean_fallback
+        except Exception as e:
+            logger.warning("Prompt optimization failed (%s)", e)
+            return clean_fallback
+
     async def generate_title(self, prompt: str, reply: str) -> str:
         """Uses LLM to summarize conversation intent into a concise 3-5 word title."""
         client = self.active_clients[0] if self.active_clients else None

@@ -57,6 +57,7 @@ class Conversation(BaseModel):
     title: str
     created_at: str
     updated_at: str
+    system_prompt: str = ""
 
 
 class Message(BaseModel):
@@ -91,6 +92,14 @@ class ChatRequest(BaseModel):
     message: str
 
 
+class UpdatePersonaRequest(BaseModel):
+    system_prompt: str = Field(default="", max_length=2000)
+
+
+class OptimizePromptRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=4000)
+
+
 def create_app(
     settings: Settings | None = None,
     generator: ReplyGenerator | None = None,
@@ -112,7 +121,7 @@ def create_app(
         CORSMiddleware,
         allow_origins=config.allowed_origins,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
 
@@ -323,10 +332,35 @@ def create_app(
         conversation_id = uuid4().hex
         with connect(config.database_path) as db:
             db.execute(
-                "INSERT INTO conversations VALUES (?, ?, ?, ?, ?)",
-                (conversation_id, user.id, "New session", timestamp, timestamp),
+                """INSERT INTO conversations(id, user_id, title, created_at, updated_at, system_prompt)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (conversation_id, user.id, "New session", timestamp, timestamp, ""),
             )
             return owned_conversation(db, conversation_id, user.id)
+
+    @app.patch("/api/conversations/{conversation_id}/persona")
+    def update_conversation_persona(
+        conversation_id: str,
+        payload: UpdatePersonaRequest,
+        user: AuthUser,
+    ):
+        """Sets a persistent system persona directive for this conversation."""
+        with connect(config.database_path) as db:
+            owned_conversation(db, conversation_id, user.id)
+            db.execute(
+                "UPDATE conversations SET system_prompt = ?, updated_at = ? WHERE id = ?",
+                (payload.system_prompt.strip(), now(), conversation_id),
+            )
+            return owned_conversation(db, conversation_id, user.id)
+
+    @app.post("/api/prompt/optimize")
+    async def optimize_prompt_endpoint(payload: OptimizePromptRequest, user: AuthUser):
+        """Enhances a user query into a crystal-clear, structured prompt."""
+        if hasattr(ai, "optimize_prompt"):
+            enhanced = await ai.optimize_prompt(payload.prompt)
+        else:
+            enhanced = f"Provide a detailed, step-by-step breakdown and practical code examples for: {payload.prompt}"
+        return {"original": payload.prompt, "optimized": enhanced}
 
     @app.get("/api/conversations/{conversation_id}", response_model=ConversationDetail)
     def get_conversation(conversation_id: str, user: AuthUser):
@@ -591,7 +625,7 @@ def create_app(
     @app.post("/api/conversations/{conversation_id}/messages", response_model=SendResult)
     async def send_message(conversation_id: str, payload: SendMessage, user: AuthUser):
         with connect(config.database_path) as db:
-            owned_conversation(db, conversation_id, user.id)
+            active_conv = owned_conversation(db, conversation_id, user.id)
             rows = db.execute(
                 """SELECT role, content FROM (
                        SELECT id, role, content FROM messages
@@ -630,6 +664,9 @@ def create_app(
                     for hit in search_results
                 ]
                 context = "\n\n---\n\n".join(context_parts)
+            if active_conv.get("system_prompt"):
+                directive = f"[Session Directive / Custom Persona: {active_conv['system_prompt']}]"
+                context = f"{directive}\n\n{context}" if context else directive
 
             reply = await ai.reply(
                 [*history, {"role": "user", "content": payload.content}],
@@ -685,7 +722,7 @@ def create_app(
     async def send_message_stream(conversation_id: str, payload: SendMessage, user: AuthUser):
         """Streams assistant reply tokens via Server-Sent Events (SSE)."""
         with connect(config.database_path) as db:
-            owned_conversation(db, conversation_id, user.id)
+            active_conv = owned_conversation(db, conversation_id, user.id)
             rows = db.execute(
                 """SELECT role, content FROM (
                        SELECT id, role, content FROM messages
@@ -724,6 +761,10 @@ def create_app(
             ]
             context = "\n\n---\n\n".join(context_parts)
             sources = list(dict.fromkeys(hit["source"] for hit in search_results))
+
+        if active_conv.get("system_prompt"):
+            directive = f"[Session Directive / Custom Persona: {active_conv['system_prompt']}]"
+            context = f"{directive}\n\n{context}" if context else directive
 
         confidence_meta = rag.calculate_retrieval_confidence(search_results)
         inflight.add(conversation_id)

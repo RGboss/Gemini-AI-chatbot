@@ -65,3 +65,9 @@ def initialize(path: Path) -> None:
             db.execute("ALTER TABLE messages ADD COLUMN completion_tokens INTEGER DEFAULT 0")
         if "total_tokens" not in existing_cols:
             db.execute("ALTER TABLE messages ADD COLUMN total_tokens INTEGER DEFAULT 0")
+
+        # Migration: Ensure system_prompt persona column exists on conversations table
+        cursor_conv = db.execute("PRAGMA table_info(conversations)")
+        existing_conv_cols = {row["name"] for row in cursor_conv.fetchall()}
+        if "system_prompt" not in existing_conv_cols:
+            db.execute("ALTER TABLE conversations ADD COLUMN system_prompt TEXT DEFAULT ''")

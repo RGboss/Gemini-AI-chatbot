@@ -47,6 +47,9 @@ class FakeChatReply:
             "Can we stream tokens directly to the frontend?",
         ]
 
+    async def optimize_prompt(self, user_prompt: str) -> str:
+        return f"Architectural breakdown and design pattern for: {user_prompt}"
+
     async def close(self):
         pass
 
@@ -199,3 +202,43 @@ def test_autotitle_and_followup_suggestions(feature_app):
     suggestions = sugg_res.json()["suggestions"]
     assert len(suggestions) == 3
     assert "How does Qdrant handle high vector dimensions?" in suggestions
+
+
+def test_session_persona_custom_instructions(feature_app):
+    client, _, fake_ai = feature_app
+    register_and_login(client, "eve")
+    conv_id = create_conversation(client)
+
+    # 1. Update session persona
+    persona_prompt = "Adopt senior security auditor persona. Highlight vulnerabilities."
+    res = client.patch(
+        f"/api/conversations/{conv_id}/persona",
+        json={"system_prompt": persona_prompt},
+    )
+    assert res.status_code == 200
+    assert res.json()["system_prompt"] == persona_prompt
+
+    # 2. Send message and verify directive injection in context
+    msg_res = client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={"content": "Check this endpoint logic."},
+    )
+    assert msg_res.status_code == 200
+    # Last call to reply should contain the custom persona directive
+    last_context = fake_ai.calls[-1]["context"]
+    assert "Session Directive / Custom Persona" in last_context
+    assert persona_prompt in last_context
+
+
+def test_ai_prompt_optimizer(feature_app):
+    client, _, _ = feature_app
+    register_and_login(client, "frank")
+
+    res = client.post(
+        "/api/prompt/optimize",
+        json={"prompt": "build auth with jwt"},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["original"] == "build auth with jwt"
+    assert "Architectural breakdown" in data["optimized"]
