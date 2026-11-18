@@ -33,7 +33,9 @@ jobs:
       - name: Run backend pytest suite
         run: |
           cd backend
-          pytest tests -v --tb=short
+          python -m pytest tests -v --tb=short
+        env:
+          PYTHONPATH: .
 
   frontend-build:
     name: Frontend Build & Lint Check
