@@ -33,8 +33,8 @@ class FakeChatReply:
     def __init__(self):
         self.calls = []
 
-    async def reply(self, messages, context=None):
-        self.calls.append({"messages": messages, "context": context})
+    async def reply(self, messages, context=None, **kwargs):
+        self.calls.append({"messages": messages, "context": context, **kwargs})
         return "I am Orbit, and this is a verified reply."
 
     async def generate_title(self, prompt: str, reply: str) -> str:
@@ -242,3 +242,55 @@ def test_ai_prompt_optimizer(feature_app):
     data = res.json()
     assert data["original"] == "build auth with jwt"
     assert "Architectural breakdown" in data["optimized"]
+
+
+def test_conversation_forking(feature_app):
+    client, _, _ = feature_app
+    register_and_login(client, "grace")
+    conv_id = create_conversation(client)
+
+    # 1. Populate conversation with 2 messages
+    client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={"content": "Turn 1: Initial query."},
+    )
+    res2 = client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={"content": "Turn 2: Follow-up query."},
+    )
+    first_assistant_id = res2.json()["messages"][0]["id"]
+
+    # 2. Fork the conversation
+    fork_res = client.post(f"/api/conversations/{conv_id}/fork")
+    assert fork_res.status_code == 201
+    forked_data = fork_res.json()
+    assert forked_data["id"] != conv_id
+    assert "[Branch]" in forked_data["title"]
+    assert len(forked_data["messages"]) == 4
+
+    # 3. Test partial forking with message_id
+    fork_partial_res = client.post(f"/api/conversations/{conv_id}/fork?message_id={first_assistant_id}")
+    assert fork_partial_res.status_code == 201
+    partial_data = fork_partial_res.json()
+    assert len(partial_data["messages"]) <= 3
+
+
+def test_context_cache_analytics_and_savings(feature_app):
+    client, _, _ = feature_app
+    register_and_login(client, "heidi")
+    conv_id = create_conversation(client)
+
+    # Send message with dynamic model selection
+    res = client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={"content": "Testing Gemini caching metrics.", "model": "gemini-3.5-pro"},
+    )
+    assert res.status_code == 200
+
+    # Verify analytics contains cached token tracking
+    analytics_res = client.get("/api/analytics/tokens")
+    assert analytics_res.status_code == 200
+    adata = analytics_res.json()
+    assert "total_cached_tokens" in adata
+    assert "cache_savings_usd" in adata
+    assert adata["model_pricing"]["cached_discount"] == "75%"

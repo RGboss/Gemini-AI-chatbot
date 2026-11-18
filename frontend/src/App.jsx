@@ -87,6 +87,20 @@ function Icon({ name, size = 20 }) {
     ),
     menu: <path d="M4 6h16M4 12h16M4 18h16" />,
     close: <path d="M18 6L6 18M6 6l12 12" />,
+    branch: (
+      <>
+        <line x1="6" y1="3" x2="6" y2="15" />
+        <circle cx="18" cy="6" r="3" />
+        <circle cx="6" cy="18" r="3" />
+        <path d="M18 9a9 9 0 0 1-9 9" />
+      </>
+    ),
+    brain: (
+      <>
+        <path d="M9.5 2a3.5 3.5 0 0 0-3.5 3.5c0 .3.04.59.11.87A3.5 3.5 0 0 0 4 9.5a3.5 3.5 0 0 0 1.25 2.68A3.5 3.5 0 0 0 4 14.5a3.5 3.5 0 0 0 3.5 3.5c.34 0 .66-.05.97-.14A3.5 3.5 0 0 0 12 20a3.5 3.5 0 0 0 3.53-2.14c.31.09.63.14.97.14a3.5 3.5 0 0 0 3.5-3.5 3.5 3.5 0 0 0-1.25-2.68A3.5 3.5 0 0 0 20 9.5a3.5 3.5 0 0 0-2.11-3.13c.07-.28.11-.57.11-.87A3.5 3.5 0 0 0 14.5 2c-1.12 0-2.1.53-2.5 1.34A3.01 3.01 0 0 0 9.5 2z" />
+        <path d="M12 4v16" />
+      </>
+    ),
     send: (
       <>
         <line x1="22" y1="2" x2="11" y2="13" />
@@ -530,6 +544,7 @@ function Chat({ user, onSignOut }) {
   const [copiedId, setCopiedId] = useState(null);
 
   // Token Efficiency & Voice states
+  const [selectedModel, setSelectedModel] = useState('gemini-3.5-flash');
   const [tokenStats, setTokenStats] = useState(null);
   const [showAnalytics, setShowAnalytics] = useState(false);
   const [analyticsData, setAnalyticsData] = useState(null);
@@ -859,7 +874,7 @@ function Chat({ user, onSignOut }) {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, model: selectedModel }),
       });
 
       if (!response.ok) {
@@ -974,6 +989,30 @@ function Chat({ user, onSignOut }) {
       window.URL.revokeObjectURL(url);
     } catch (err) {
       handleError(err);
+    }
+  }
+
+  async function handleFork(messageId = null) {
+    if (!activeId || operationRef.current) return;
+    operationRef.current = true;
+    setBusy(true);
+    setError('');
+    try {
+      const url = messageId
+        ? `/conversations/${activeId}/fork?message_id=${messageId}`
+        : `/conversations/${activeId}/fork`;
+      const forked = await api(url, { method: 'POST' });
+      setConversations((items) => [forked, ...items]);
+      setActiveId(forked.id);
+      setMessages(forked.messages || []);
+      await loadDocuments(forked.id);
+      setUploadBanner(`Forked conversation branch: "${forked.title}"`);
+      setTimeout(() => setUploadBanner(''), 4000);
+    } catch (err) {
+      handleError(err);
+    } finally {
+      operationRef.current = false;
+      setBusy(false);
     }
   }
 
@@ -1174,6 +1213,15 @@ function Chat({ user, onSignOut }) {
                   <button
                     type="button"
                     className="header-action-button"
+                    onClick={() => handleFork()}
+                    title="Fork this entire conversation into a new branch"
+                  >
+                    <Icon name="branch" size={14} />
+                    <span>Branch</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="header-action-button"
                     onClick={() => handleExport('markdown')}
                     title="Export conversation as Markdown"
                   >
@@ -1288,6 +1336,7 @@ function Chat({ user, onSignOut }) {
                     metrics={message.metrics}
                     suggestions={message.suggestions}
                     onSuggestionClick={(sugText) => send(null, sugText)}
+                    onFork={handleFork}
                   />
                 ))}
 
@@ -1488,6 +1537,16 @@ function Chat({ user, onSignOut }) {
                 </div>
 
                 <div className="composer-actions">
+                  <button
+                    type="button"
+                    className={`model-selector-btn ${selectedModel === 'gemini-3.5-pro' ? 'pro' : 'flash'}`}
+                    onClick={() => setSelectedModel(selectedModel === 'gemini-3.5-flash' ? 'gemini-3.5-pro' : 'gemini-3.5-flash')}
+                    title={`Current: ${selectedModel === 'gemini-3.5-pro' ? 'Gemini 3.5 Pro (Deep Reasoning)' : 'Gemini 3.5 Flash (Ultra-Low Latency)'} - Click to switch`}
+                    disabled={busy || loading || uploading}
+                  >
+                    <Icon name={selectedModel === 'gemini-3.5-pro' ? 'brain' : 'zap'} size={12} />
+                    <span>{selectedModel === 'gemini-3.5-pro' ? 'Pro 3.5' : 'Flash 3.5'}</span>
+                  </button>
                   <span className="char-count" title="Estimated input prompt tokens">
                     ⚡ ~{Math.max(Math.ceil(draft.length / 4), 0)} tok {draft.length > 5000 ? `(${draft.length}/8000)` : ''}
                   </span>
@@ -1568,6 +1627,16 @@ function Chat({ user, onSignOut }) {
                   </div>
                 </div>
 
+                <div className="analytics-card cache-saving">
+                  <div className="analytics-card-label">Context Cache Saved ({analyticsData?.cached_discount || '75%'} off)</div>
+                  <div className="analytics-card-val">
+                    ${(analyticsData?.cache_savings_usd ?? 0).toFixed(5)}
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
+                    {(analyticsData?.total_cached_tokens || 0).toLocaleString()} cached tokens
+                  </div>
+                </div>
+
                 <div className="analytics-card">
                   <div className="analytics-card-label">Total Tokens Billed</div>
                   <div className="analytics-card-val">
@@ -1638,6 +1707,7 @@ function MessageBubble({
   metrics,
   suggestions,
   onSuggestionClick,
+  onFork,
 }) {
   const assistant = role === 'assistant';
   return (
@@ -1652,19 +1722,30 @@ function MessageBubble({
             {assistant && <span className="ai-tag">Intelligence</span>}
           </div>
 
-          {assistant && (
-            <div className="message-tooltips">
-              {onSpeak && (
-                <button
-                  type="button"
-                  className={`action-pill ${speaking ? 'active' : ''}`}
-                  onClick={() => onSpeak(content, id)}
-                  title={speaking ? 'Stop speech readout' : 'Listen with natural speech'}
-                >
-                  <Icon name="volume" size={12} />
-                  <span>{speaking ? 'Stop' : 'Listen'}</span>
-                </button>
-              )}
+          <div className="message-tooltips">
+            {onFork && id && (
+              <button
+                type="button"
+                className="action-pill"
+                onClick={() => onFork(id)}
+                title="Branch conversation from this turn"
+              >
+                <Icon name="branch" size={12} />
+                <span>Branch</span>
+              </button>
+            )}
+            {assistant && onSpeak && (
+              <button
+                type="button"
+                className={`action-pill ${speaking ? 'active' : ''}`}
+                onClick={() => onSpeak(content, id)}
+                title={speaking ? 'Stop speech readout' : 'Listen with natural speech'}
+              >
+                <Icon name="volume" size={12} />
+                <span>{speaking ? 'Stop' : 'Listen'}</span>
+              </button>
+            )}
+            {assistant && (
               <button
                 type="button"
                 className="action-pill"
@@ -1674,7 +1755,8 @@ function MessageBubble({
                 <Icon name={copied ? 'check' : 'copy'} size={12} />
                 <span>{copied ? 'Copied' : 'Copy'}</span>
               </button>
-              {onRegenerate && (
+            )}
+              {assistant && onRegenerate && (
                 <button
                   type="button"
                   className="action-pill"
@@ -1685,8 +1767,7 @@ function MessageBubble({
                   <span>Regenerate</span>
                 </button>
               )}
-            </div>
-          )}
+          </div>
         </div>
 
         <div className="message-content">

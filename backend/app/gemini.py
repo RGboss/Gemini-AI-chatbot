@@ -1,6 +1,8 @@
+import hashlib
 import json
 import logging
 import re
+import time
 from collections.abc import AsyncIterator
 from typing import Any, Protocol
 
@@ -17,11 +19,11 @@ logger = logging.getLogger(__name__)
 
 class ReplyGenerator(Protocol):
     async def reply(
-        self, messages: list[dict[str, str]], context: str | None = None
+        self, messages: list[dict[str, str]], context: str | None = None, **kwargs: Any
     ) -> str: ...
 
     async def reply_stream(
-        self, messages: list[dict[str, str]], context: str | None = None
+        self, messages: list[dict[str, str]], context: str | None = None, **kwargs: Any
     ) -> AsyncIterator[str]: ...
 
     async def close(self) -> None: ...
@@ -39,12 +41,52 @@ class GeminiService:
             for key in self.keys
         ]
         self.client = self.clients[0] if self.clients else None
+        self.context_caches: dict[str, dict[str, Any]] = {}
         self.last_usage: dict[str, int] = {
             "prompt_tokens": 0,
             "completion_tokens": 0,
             "total_tokens": 0,
             "cached_tokens": 0,
         }
+
+    async def get_or_create_context_cache(self, conversation_id: str, context: str) -> str | None:
+        """
+        Gemini Context Caching:
+        For long context or large documents (>8,000 chars / ~2,048 tokens), creates or reuses
+        a server-side Gemini cached content object, slashing subsequent prompt token costs by 75-90%.
+        """
+        if not context or len(context) < 8000:
+            return None
+        client = self.active_clients[0] if self.active_clients else None
+        if not client or not hasattr(client, "aio") or not hasattr(client.aio, "caches"):
+            return None
+
+        content_hash = hashlib.sha256(context.encode("utf-8")).hexdigest()
+        existing = self.context_caches.get(conversation_id)
+        if existing and existing.get("hash") == content_hash:
+            if time.time() - existing.get("created_at", 0) < 3300:
+                return existing["name"]
+
+        try:
+            cache = await client.aio.caches.create(
+                model=self.model,
+                config=types.CreateCachedContentConfig(
+                    contents=[types.Content(role="user", parts=[types.Part(text=context)])],
+                    ttl="3600s",
+                ),
+            )
+            cache_name = getattr(cache, "name", None)
+            if cache_name:
+                self.context_caches[conversation_id] = {
+                    "name": cache_name,
+                    "hash": content_hash,
+                    "created_at": time.time(),
+                }
+                logger.info("Created Gemini context cache: %s for conv: %s", cache_name, conversation_id)
+                return cache_name
+        except Exception as exc:
+            logger.debug("Context cache creation bypassed (%s)", exc)
+        return None
 
     @property
     def active_clients(self) -> list[Any]:
@@ -75,6 +117,7 @@ class GeminiService:
         self,
         contents: list[types.Content],
         config: types.GenerateContentConfig,
+        model: str | None = None,
     ):
         """
         Automatic Key Failover (Rotation Wrapper):
@@ -89,11 +132,12 @@ class GeminiService:
                 detail="Orbit is not configured. Set GOOGLE_API_KEY in backend/.env.",
             )
 
+        target_model = model or self.model
         last_error = None
         for i, client in enumerate(candidate_clients):
             try:
                 response = await client.aio.models.generate_content(
-                    model=self.model,
+                    model=target_model,
                     contents=contents,
                     config=config,
                 )
@@ -147,7 +191,11 @@ class GeminiService:
         )
 
     async def reply(
-        self, messages: list[dict[str, str]], context: str | None = None
+        self,
+        messages: list[dict[str, str]],
+        context: str | None = None,
+        model: str | None = None,
+        cached_content: str | None = None,
     ) -> str:
         contents = [
             types.Content(
@@ -157,13 +205,16 @@ class GeminiService:
             for message in messages
         ]
 
-        system_instruction = self._build_system_instruction(context)
-        config = types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            max_output_tokens=4096,
-        )
+        system_instruction = self._build_system_instruction(context if not cached_content else None)
+        config_kwargs: dict[str, Any] = {"max_output_tokens": 4096}
+        if system_instruction:
+            config_kwargs["system_instruction"] = system_instruction
+        if cached_content:
+            config_kwargs["cached_content"] = cached_content
 
-        response = await self.generate_with_failover(contents, config)
+        config = types.GenerateContentConfig(**config_kwargs)
+
+        response = await self.generate_with_failover(contents, config, model=model)
         if not response.text or not response.text.strip():
             raise HTTPException(
                 status_code=502,
@@ -190,7 +241,11 @@ class GeminiService:
         return response.text.strip()
 
     async def reply_stream(
-        self, messages: list[dict[str, str]], context: str | None = None
+        self,
+        messages: list[dict[str, str]],
+        context: str | None = None,
+        model: str | None = None,
+        cached_content: str | None = None,
     ) -> AsyncIterator[str]:
         candidate_clients = self.active_clients
 
@@ -208,11 +263,15 @@ class GeminiService:
             for message in messages
         ]
 
-        system_instruction = self._build_system_instruction(context)
-        config = types.GenerateContentConfig(
-            system_instruction=system_instruction,
-            max_output_tokens=4096,
-        )
+        system_instruction = self._build_system_instruction(context if not cached_content else None)
+        config_kwargs: dict[str, Any] = {"max_output_tokens": 4096}
+        if system_instruction:
+            config_kwargs["system_instruction"] = system_instruction
+        if cached_content:
+            config_kwargs["cached_content"] = cached_content
+
+        config = types.GenerateContentConfig(**config_kwargs)
+        target_model = model or self.model
 
         # Attempt stream with failover across clients
         streamed_any = False
@@ -220,7 +279,7 @@ class GeminiService:
         for i, client in enumerate(candidate_clients):
             try:
                 response_stream = await client.aio.models.generate_content_stream(
-                    model=self.model,
+                    model=target_model,
                     contents=contents,
                     config=config,
                 )
@@ -256,7 +315,7 @@ class GeminiService:
                 continue
 
         # If streaming attempts failed before any token emitted, fall back to complete generation
-        fallback = await self.reply(messages, context=context)
+        fallback = await self.reply(messages, context=context, model=target_model, cached_content=cached_content)
         yield fallback
 
     async def optimize_prompt(self, user_prompt: str) -> str:

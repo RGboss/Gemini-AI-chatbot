@@ -73,6 +73,7 @@ class ConversationDetail(Conversation):
 
 class SendMessage(BaseModel):
     content: str = Field(min_length=1, max_length=8000)
+    model: str | None = Field(default=None, max_length=64)
 
     @field_validator("content")
     @classmethod
@@ -275,7 +276,8 @@ def create_app(
                        COUNT(*) as total_messages,
                        COALESCE(SUM(prompt_tokens), 0) as total_prompt_tokens,
                        COALESCE(SUM(completion_tokens), 0) as total_completion_tokens,
-                       COALESCE(SUM(total_tokens), 0) as total_tokens
+                       COALESCE(SUM(total_tokens), 0) as total_tokens,
+                       COALESCE(SUM(cached_tokens), 0) as total_cached_tokens
                    FROM messages
                    JOIN conversations ON conversations.id = messages.conversation_id
                    WHERE conversations.user_id = ?""",
@@ -286,17 +288,21 @@ def create_app(
         total_toks = row["total_tokens"] if row else 0
         prompt_toks = row["total_prompt_tokens"] if row else 0
         comp_toks = row["total_completion_tokens"] if row else 0
+        cached_toks = row["total_cached_tokens"] if row else 0
 
         # Token Pricing for Gemini Flash:
         # Input: $0.075 per 1,000,000 tokens ($0.000075 / 1k)
         # Output: $0.300 per 1,000,000 tokens ($0.000300 / 1k)
+        # Cached Context input: 75% cheaper ($0.01875 / 1M)
         cost_input = (prompt_toks / 1_000_000.0) * 0.075
         cost_output = (comp_toks / 1_000_000.0) * 0.300
         estimated_cost_usd = round(cost_input + cost_output, 6)
 
         # Tokens saved via whitespace/chunk compression (~22%) and sliding window budget (approx 1.8x prompt tokens)
         saved_est = max(int(prompt_toks * 1.8), 0)
-        cost_saved_usd = round((saved_est / 1_000_000.0) * 0.075, 6)
+        cache_saved_usd = round((cached_toks / 1_000_000.0) * (0.075 * 0.75), 6)
+        compression_saved_usd = round((saved_est / 1_000_000.0) * 0.075, 6)
+        cost_saved_usd = round(compression_saved_usd + cache_saved_usd, 6)
         efficiency_ratio = round((saved_est / max(total_toks + saved_est, 1)) * 100, 1)
 
         return {
@@ -304,14 +310,17 @@ def create_app(
             "total_prompt_tokens": prompt_toks,
             "total_completion_tokens": comp_toks,
             "total_tokens": total_toks,
+            "total_cached_tokens": cached_toks,
             "estimated_tokens_saved": saved_est,
             "average_tokens_per_message": int(total_toks / max(total_msgs, 1)),
             "estimated_cost_usd": estimated_cost_usd,
             "cost_saved_usd": cost_saved_usd,
+            "cache_savings_usd": cache_saved_usd,
             "efficiency_ratio_percent": efficiency_ratio,
             "model_pricing": {
                 "input_per_million": "$0.075",
                 "output_per_million": "$0.300",
+                "cached_discount": "75%",
                 "currency": "USD",
             },
         }
@@ -379,6 +388,58 @@ def create_app(
             if conversation_id in inflight:
                 raise HTTPException(status_code=409, detail="Wait for the current reply before deleting.")
             db.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+
+    @app.post("/api/conversations/{conversation_id}/fork", response_model=ConversationDetail, status_code=201)
+    def fork_conversation(
+        conversation_id: str,
+        user: AuthUser,
+        message_id: int | None = Query(None, description="Fork up to this message ID"),
+    ):
+        """Time-travel forking: clones a conversation from any prior message into an independent branch."""
+        with connect(config.database_path) as db:
+            source_conv = owned_conversation(db, conversation_id, user.id)
+            if message_id is not None:
+                rows = db.execute(
+                    """SELECT role, content, created_at, prompt_tokens, completion_tokens, total_tokens, cached_tokens 
+                       FROM messages WHERE conversation_id = ? AND id <= ? ORDER BY id""",
+                    (conversation_id, message_id),
+                ).fetchall()
+            else:
+                rows = db.execute(
+                    """SELECT role, content, created_at, prompt_tokens, completion_tokens, total_tokens, cached_tokens 
+                       FROM messages WHERE conversation_id = ? ORDER BY id""",
+                    (conversation_id,),
+                ).fetchall()
+
+            timestamp = now()
+            new_id = uuid4().hex
+            clean_title = f"[Branch] {source_conv['title'][:40]}"
+            db.execute(
+                """INSERT INTO conversations(id, user_id, title, created_at, updated_at, system_prompt)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (new_id, user.id, clean_title, timestamp, timestamp, source_conv.get("system_prompt", "")),
+            )
+
+            inserted = []
+            for r in rows:
+                c_toks = r["cached_tokens"] if "cached_tokens" in r.keys() else 0
+                cursor = db.execute(
+                    """INSERT INTO messages(conversation_id, role, content, created_at, prompt_tokens, completion_tokens, total_tokens, cached_tokens)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (new_id, r["role"], r["content"], r["created_at"], r["prompt_tokens"], r["completion_tokens"], r["total_tokens"], c_toks),
+                )
+                inserted.append({"id": cursor.lastrowid, **dict(r)})
+
+            # Clone document cache if documents exist
+            docs = rag.list_documents(conversation_id=conversation_id)
+            for d in docs:
+                source_key = f"{conversation_id}:{d}"
+                target_key = f"{new_id}:{d}"
+                if source_key in rag.document_cache:
+                    rag.document_cache[target_key] = rag.document_cache[source_key]
+
+            new_conv = owned_conversation(db, new_id, user.id)
+            return {**new_conv, "messages": inserted}
 
     @app.get("/api/conversations/{conversation_id}/export")
     def export_conversation(
@@ -668,18 +729,29 @@ def create_app(
                 directive = f"[Session Directive / Custom Persona: {active_conv['system_prompt']}]"
                 context = f"{directive}\n\n{context}" if context else directive
 
+            cached_content = None
+            if hasattr(ai, "get_or_create_context_cache") and context:
+                try:
+                    cached_content = await ai.get_or_create_context_cache(conversation_id, context)
+                except Exception as exc:
+                    logger.debug("Cache retrieval bypassed (%s)", exc)
+
             reply = await ai.reply(
                 [*history, {"role": "user", "content": payload.content}],
                 context=context,
+                model=payload.model,
+                cached_content=cached_content,
             )
 
             usage = getattr(ai, "last_usage", None) or {
                 "prompt_tokens": max(sum(len(m["content"]) for m in history) // 4, 1),
                 "completion_tokens": max(len(reply) // 4, 1),
                 "total_tokens": max(sum(len(m["content"]) for m in history) // 4, 1) + max(len(reply) // 4, 1),
+                "cached_tokens": 0,
             }
             prompt_toks = usage.get("prompt_tokens", 0)
             comp_toks = usage.get("completion_tokens", 0)
+            cached_toks = usage.get("cached_tokens", 0)
 
             timestamp = now()
             with connect(config.database_path) as db:
@@ -700,10 +772,11 @@ def create_app(
                     p_val = prompt_toks if role == "user" else 0
                     c_val = comp_toks if role == "assistant" else 0
                     t_val = p_val + c_val
+                    c_cached = cached_toks if role == "assistant" else 0
                     cursor = db.execute(
-                        """INSERT INTO messages(conversation_id, role, content, created_at, prompt_tokens, completion_tokens, total_tokens)
-                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                        (conversation_id, role, content, timestamp, p_val, c_val, t_val),
+                        """INSERT INTO messages(conversation_id, role, content, created_at, prompt_tokens, completion_tokens, total_tokens, cached_tokens)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (conversation_id, role, content, timestamp, p_val, c_val, t_val, c_cached),
                     )
                     inserted.append(
                         {"id": cursor.lastrowid, "role": role, "content": content, "created_at": timestamp}
@@ -769,6 +842,13 @@ def create_app(
         confidence_meta = rag.calculate_retrieval_confidence(search_results)
         inflight.add(conversation_id)
 
+        cached_content = None
+        if hasattr(ai, "get_or_create_context_cache") and context:
+            try:
+                cached_content = await ai.get_or_create_context_cache(conversation_id, context)
+            except Exception as exc:
+                logger.debug("Cache retrieval bypassed (%s)", exc)
+
         async def event_generator() -> AsyncIterator[str]:
             full_reply_parts = []
             try:
@@ -781,6 +861,8 @@ def create_app(
                     async for token in ai.reply_stream(
                         [*history, {"role": "user", "content": payload.content}],
                         context=context,
+                        model=payload.model,
+                        cached_content=cached_content,
                     ):
                         full_reply_parts.append(token)
                         yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
@@ -788,6 +870,8 @@ def create_app(
                     reply = await ai.reply(
                         [*history, {"role": "user", "content": payload.content}],
                         context=context,
+                        model=payload.model,
+                        cached_content=cached_content,
                     )
                     full_reply_parts.append(reply)
                     yield f"data: {json.dumps({'type': 'token', 'token': reply})}\n\n"
@@ -797,6 +881,7 @@ def create_app(
                     "prompt_tokens": max(sum(len(m["content"]) for m in history) // 4, 1),
                     "completion_tokens": max(len(final_reply) // 4, 1),
                     "total_tokens": max(sum(len(m["content"]) for m in history) // 4, 1) + max(len(final_reply) // 4, 1),
+                    "cached_tokens": 0,
                 }
                 yield f"data: {json.dumps({'type': 'usage', **usage})}\n\n"
 
@@ -816,6 +901,7 @@ def create_app(
                 timestamp = now()
                 prompt_toks = usage.get("prompt_tokens", 0)
                 comp_toks = usage.get("completion_tokens", 0)
+                cached_toks = usage.get("cached_tokens", 0)
 
                 with connect(config.database_path) as db:
                     conversation = owned_conversation(db, conversation_id, user.id)
@@ -835,10 +921,11 @@ def create_app(
                         p_val = prompt_toks if role == "user" else 0
                         c_val = comp_toks if role == "assistant" else 0
                         t_val = p_val + c_val
+                        c_cached = cached_toks if role == "assistant" else 0
                         cursor = db.execute(
-                            """INSERT INTO messages(conversation_id, role, content, created_at, prompt_tokens, completion_tokens, total_tokens)
-                               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                            (conversation_id, role, content, timestamp, p_val, c_val, t_val),
+                            """INSERT INTO messages(conversation_id, role, content, created_at, prompt_tokens, completion_tokens, total_tokens, cached_tokens)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                            (conversation_id, role, content, timestamp, p_val, c_val, t_val, c_cached),
                         )
                         inserted.append(
                             {"id": cursor.lastrowid, "role": role, "content": content, "created_at": timestamp}
