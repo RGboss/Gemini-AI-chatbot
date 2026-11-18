@@ -95,6 +95,17 @@ function Icon({ name, size = 20 }) {
     ),
     menu: <path d="M4 6h16M4 12h16M4 18h16" />,
     close: <path d="M18 6L6 18M6 6l12 12" />,
+    pin: (
+      <>
+        <line x1="12" y1="17" x2="12" y2="22" />
+        <path d="M5 17h14v-2l-2-3V5a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7l-2 3v2z" />
+      </>
+    ),
+    pencil: (
+      <>
+        <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+      </>
+    ),
     branch: (
       <>
         <line x1="6" y1="3" x2="6" y2="15" />
@@ -649,6 +660,8 @@ function Chat({ user, onSignOut }) {
 
   // Quick action feedback
   const [copiedId, setCopiedId] = useState(null);
+  const [editingChatId, setEditingChatId] = useState(null);
+  const [editTitleDraft, setEditTitleDraft] = useState('');
 
   // Token Efficiency & Voice states
   const [selectedModel, setSelectedModel] = useState('gemini-3.5-flash');
@@ -901,6 +914,44 @@ function Chat({ user, onSignOut }) {
     } finally {
       operationRef.current = false;
       setBusy(false);
+    }
+  }
+
+  async function togglePinChat(conversation) {
+    if (!conversation?.id) return;
+    const updatedPin = !conversation.is_pinned;
+    try {
+      await api(`/conversations/${conversation.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ is_pinned: updatedPin }),
+      });
+      setConversations((items) =>
+        items
+          .map((item) => (item.id === conversation.id ? { ...item, is_pinned: updatedPin } : item))
+          .sort((a, b) => (b.is_pinned ? 1 : 0) - (a.is_pinned ? 1 : 0))
+      );
+    } catch (err) {
+      handleError(err);
+    }
+  }
+
+  async function handleRenameChat(conversationId, newTitle) {
+    if (!newTitle || !newTitle.trim()) {
+      setEditingChatId(null);
+      return;
+    }
+    try {
+      const res = await api(`/conversations/${conversationId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ title: newTitle.trim() }),
+      });
+      setConversations((items) =>
+        items.map((item) => (item.id === conversationId ? { ...item, title: res.title } : item))
+      );
+    } catch (err) {
+      handleError(err);
+    } finally {
+      setEditingChatId(null);
     }
   }
 
@@ -1173,9 +1224,9 @@ function Chat({ user, onSignOut }) {
   }
 
   const active = conversations.find((item) => item.id === activeId);
-  const filteredConversations = conversations.filter((item) =>
-    searchQuery ? item.title.toLowerCase().includes(searchQuery.toLowerCase()) : true
-  );
+  const filteredConversations = conversations
+    .filter((item) => (searchQuery ? item.title.toLowerCase().includes(searchQuery.toLowerCase()) : true))
+    .sort((a, b) => (b.is_pinned ? 1 : 0) - (a.is_pinned ? 1 : 0));
   const empty = messages.length === 0 && !pendingUserText && !streamingText;
 
   return (
@@ -1231,26 +1282,80 @@ function Chat({ user, onSignOut }) {
           ) : (
             filteredConversations.map((item) => (
               <div
-                className={`history-row ${activeId === item.id ? 'selected' : ''}`}
+                className={`history-row ${activeId === item.id ? 'selected' : ''} ${item.is_pinned ? 'is-pinned-row' : ''}`}
                 key={item.id}
               >
-                <button
-                  className="history-item"
-                  disabled={busy}
-                  onClick={() => selectChat(item.id)}
-                  title={item.title}
-                >
-                  <Icon name="chat" size={15} />
-                  <span>{item.title}</span>
-                </button>
-                <button
-                  className="delete-chat"
-                  disabled={busy}
-                  onClick={() => removeChat(item)}
-                  aria-label={`Delete ${item.title}`}
-                >
-                  <Icon name="trash" size={14} />
-                </button>
+                {editingChatId === item.id ? (
+                  <div className="rename-input-wrap">
+                    <input
+                      type="text"
+                      className="rename-chat-input"
+                      value={editTitleDraft}
+                      onChange={(e) => setEditTitleDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleRenameChat(item.id, editTitleDraft);
+                        if (e.key === 'Escape') setEditingChatId(null);
+                      }}
+                      onBlur={() => handleRenameChat(item.id, editTitleDraft)}
+                      autoFocus
+                    />
+                  </div>
+                ) : (
+                  <button
+                    className="history-item"
+                    disabled={busy}
+                    onClick={() => selectChat(item.id)}
+                    title={`${item.title} (Double-click to rename)`}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      setEditingChatId(item.id);
+                      setEditTitleDraft(item.title);
+                    }}
+                  >
+                    <Icon name={item.is_pinned ? 'pin' : 'chat'} size={15} />
+                    <span className="history-item-title">{item.title}</span>
+                  </button>
+                )}
+
+                <div className="history-actions">
+                  <button
+                    className={`history-action-btn pin-btn ${item.is_pinned ? 'active-pin' : ''}`}
+                    disabled={busy}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      togglePinChat(item);
+                    }}
+                    title={item.is_pinned ? 'Unpin session' : 'Pin session to top'}
+                    aria-label={item.is_pinned ? 'Unpin' : 'Pin'}
+                  >
+                    <Icon name="pin" size={13} />
+                  </button>
+                  <button
+                    className="history-action-btn rename-btn"
+                    disabled={busy}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setEditingChatId(item.id);
+                      setEditTitleDraft(item.title);
+                    }}
+                    title="Rename session"
+                    aria-label="Rename session"
+                  >
+                    <Icon name="pencil" size={12} />
+                  </button>
+                  <button
+                    className="history-action-btn delete-chat"
+                    disabled={busy}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeChat(item);
+                    }}
+                    aria-label={`Delete ${item.title}`}
+                    title="Delete session"
+                  >
+                    <Icon name="trash" size={13} />
+                  </button>
+                </div>
               </div>
             ))
           )}

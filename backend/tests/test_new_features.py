@@ -334,3 +334,33 @@ def test_fork_with_rag_document_cache(feature_app):
     assert f"{forked_id}:manual.txt" in rag.document_cache
     cached_content = rag.get_document_content("manual.txt", conversation_id=forked_id)
     assert len(cached_content) > 0
+
+
+def test_rename_and_pin_conversation(feature_app):
+    client, _, _ = feature_app
+    register_and_login(client, "karl")
+    conv1 = create_conversation(client)
+    conv2 = create_conversation(client)
+
+    # 1. Rename conversation
+    rename_res = client.patch(
+        f"/api/conversations/{conv1}",
+        json={"title": "Custom Architecture Spec"},
+    )
+    assert rename_res.status_code == 200
+    assert rename_res.json()["title"] == "Custom Architecture Spec"
+
+    # 2. Pin conversation 1
+    pin_res = client.patch(
+        f"/api/conversations/{conv1}",
+        json={"is_pinned": True},
+    )
+    assert pin_res.status_code == 200
+    assert pin_res.json()["is_pinned"] is True
+
+    # 3. Check list: pinned conversation must appear first
+    list_res = client.get("/api/conversations")
+    assert list_res.status_code == 200
+    conversations = list_res.json()
+    assert conversations[0]["id"] == conv1
+    assert conversations[0]["is_pinned"] is True

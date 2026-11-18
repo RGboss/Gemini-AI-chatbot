@@ -68,8 +68,10 @@ def initialize(path: Path) -> None:
         if "cached_tokens" not in existing_cols:
             db.execute("ALTER TABLE messages ADD COLUMN cached_tokens INTEGER DEFAULT 0")
 
-        # Migration: Ensure system_prompt persona column exists on conversations table
+        # Migration: Ensure system_prompt persona and is_pinned columns exist on conversations table
         cursor_conv = db.execute("PRAGMA table_info(conversations)")
         existing_conv_cols = {row["name"] for row in cursor_conv.fetchall()}
         if "system_prompt" not in existing_conv_cols:
             db.execute("ALTER TABLE conversations ADD COLUMN system_prompt TEXT DEFAULT ''")
+        if "is_pinned" not in existing_conv_cols:
+            db.execute("ALTER TABLE conversations ADD COLUMN is_pinned INTEGER DEFAULT 0")

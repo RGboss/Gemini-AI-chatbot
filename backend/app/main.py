@@ -58,6 +58,7 @@ class Conversation(BaseModel):
     created_at: str
     updated_at: str
     system_prompt: str = ""
+    is_pinned: bool = False
 
 
 class Message(BaseModel):
@@ -95,6 +96,11 @@ class ChatRequest(BaseModel):
 
 class UpdatePersonaRequest(BaseModel):
     system_prompt: str = Field(default="", max_length=2000)
+
+
+class UpdateConversationRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=120)
+    is_pinned: bool | None = None
 
 
 class OptimizePromptRequest(BaseModel):
@@ -330,7 +336,7 @@ def create_app(
     def list_conversations(user: AuthUser):
         with connect(config.database_path) as db:
             rows = db.execute(
-                "SELECT * FROM conversations WHERE user_id = ? ORDER BY updated_at DESC, id",
+                "SELECT * FROM conversations WHERE user_id = ? ORDER BY is_pinned DESC, updated_at DESC, id",
                 (user.id,),
             ).fetchall()
         return [dict(row) for row in rows]
@@ -341,10 +347,34 @@ def create_app(
         conversation_id = uuid4().hex
         with connect(config.database_path) as db:
             db.execute(
-                """INSERT INTO conversations(id, user_id, title, created_at, updated_at, system_prompt)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                """INSERT INTO conversations(id, user_id, title, created_at, updated_at, system_prompt, is_pinned)
+                   VALUES (?, ?, ?, ?, ?, ?, 0)""",
                 (conversation_id, user.id, "New session", timestamp, timestamp, ""),
             )
+            return owned_conversation(db, conversation_id, user.id)
+
+    @app.patch("/api/conversations/{conversation_id}", response_model=Conversation)
+    def update_conversation(
+        conversation_id: str,
+        payload: UpdateConversationRequest,
+        user: AuthUser,
+    ):
+        """Updates title and/or pin status of a conversation."""
+        with connect(config.database_path) as db:
+            owned_conversation(db, conversation_id, user.id)
+            updates = []
+            params = []
+            if payload.title is not None:
+                updates.append("title = ?")
+                params.append(payload.title.strip() or "Untitled session")
+            if payload.is_pinned is not None:
+                updates.append("is_pinned = ?")
+                params.append(1 if payload.is_pinned else 0)
+            if updates:
+                updates.append("updated_at = ?")
+                params.append(now())
+                params.append(conversation_id)
+                db.execute(f"UPDATE conversations SET {', '.join(updates)} WHERE id = ?", params)
             return owned_conversation(db, conversation_id, user.id)
 
     @app.patch("/api/conversations/{conversation_id}/persona")

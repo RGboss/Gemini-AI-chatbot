@@ -575,23 +575,81 @@ svg {
   color: var(--accent-cyan);
 }
 
-.delete-chat {
-  display: grid;
-  place-items: center;
-  color: var(--text-muted);
-  background: none;
-  border: 0;
-  padding: 8px 8px;
+.history-row.is-pinned-row {
+  border-left: 2px solid #a855f7;
+  background: rgba(168, 85, 247, 0.05);
+}
+
+.history-item-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.rename-input-wrap {
+  flex: 1;
+  padding: 6px 8px;
+}
+
+.rename-chat-input {
+  width: 100%;
+  background: #090d16;
+  border: 1px solid var(--accent-cyan);
+  border-radius: 4px;
+  color: #ffffff;
+  font-size: 12px;
+  padding: 4px 6px;
+  outline: none;
+}
+
+.history-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 6px;
   opacity: 0;
   transition: all 0.15s ease;
 }
 
-.history-row:hover .delete-chat,
-.delete-chat:focus-visible {
+.history-row:hover .history-actions,
+.history-row:focus-within .history-actions {
   opacity: 1;
 }
 
-.delete-chat:hover {
+.history-action-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  padding: 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.history-action-btn:hover {
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.history-action-btn.pin-btn.active-pin {
+  color: #c084fc;
+  opacity: 1;
+}
+
+.history-action-btn.pin-btn:hover {
+  color: #c084fc;
+}
+
+.history-action-btn.rename-btn:hover {
+  color: var(--accent-cyan);
+}
+
+.history-action-btn.delete-chat:hover {
   color: #f87171;
 }
 
