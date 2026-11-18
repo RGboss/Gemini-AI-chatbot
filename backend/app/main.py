@@ -504,9 +504,11 @@ def create_app(
             f"USER MESSAGE: {chat_req.message}\n"
         )
         reply = await ai.reply([{"role": "user", "content": system_prompt}])
+        confidence_meta = rag.calculate_retrieval_confidence(search_results)
         return {
             "reply": reply,
             "sources": sources,
+            "confidence": confidence_meta,
         }
 
     # --- Messaging Endpoint (with Hybrid RAG & Memory Expansion) ---
@@ -641,14 +643,15 @@ def create_app(
             context = "\n\n---\n\n".join(context_parts)
             sources = list(dict.fromkeys(hit["source"] for hit in search_results))
 
+        confidence_meta = rag.calculate_retrieval_confidence(search_results)
         inflight.add(conversation_id)
 
         async def event_generator() -> AsyncIterator[str]:
             full_reply_parts = []
             try:
-                # First yield any referenced sources
+                # First yield any referenced sources and grounding confidence
                 if sources:
-                    yield f"data: {json.dumps({'type': 'sources', 'sources': sources})}\n\n"
+                    yield f"data: {json.dumps({'type': 'sources', 'sources': sources, 'confidence': confidence_meta})}\n\n"
 
                 # Check if generator supports reply_stream
                 if hasattr(ai, "reply_stream"):

@@ -360,6 +360,24 @@ class RAGService:
         scored_candidates.sort(key=lambda x: x["score"], reverse=True)
         return scored_candidates[:limit]
 
+    def calculate_retrieval_confidence(self, chunks: list[dict[str, Any]]) -> dict[str, Any]:
+        """
+        CRAG (Corrective RAG) Grounding Confidence Evaluator:
+        Assesses retrieval quality to score grounding reliability.
+        """
+        if not chunks:
+            return {"score": 0.0, "level": "NONE", "percentage": 0}
+        top_score = max(c.get("score", 0.0) for c in chunks)
+        # Normalize score into a confidence percentage (typical scores range from 0.2 to 0.9+)
+        pct = min(max(int(top_score * 110), 45), 98)
+        if pct >= 80:
+            level = "HIGH"
+        elif pct >= 65:
+            level = "MEDIUM"
+        else:
+            level = "LOW"
+        return {"score": round(top_score, 3), "level": level, "percentage": pct}
+
     def list_documents(
         self, conversation_id: str | None = None, user_id: int | None = None
     ) -> list[str]:

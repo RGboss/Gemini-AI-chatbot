@@ -199,6 +199,39 @@ function formatCitations(text, defaultDoc) {
   return formatted;
 }
 
+function CodeBlock({ className, children, ...props }) {
+  const [copied, setCopied] = useState(false);
+  const match = /language-(\w+)/.exec(className || '');
+  const language = match ? match[1] : '';
+  const codeString = String(children).replace(/\n$/, '');
+
+  function handleCopy() {
+    navigator.clipboard.writeText(codeString);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  return (
+    <div className="code-block-container">
+      <div className="code-block-header">
+        <span className="code-block-lang">{language || 'code'}</span>
+        <button
+          type="button"
+          className="code-copy-btn"
+          onClick={handleCopy}
+          title="Copy code to clipboard"
+        >
+          <Icon name={copied ? 'check' : 'copy'} size={12} />
+          <span>{copied ? 'Copied!' : 'Copy Code'}</span>
+        </button>
+      </div>
+      <pre className={className}>
+        <code {...props}>{children}</code>
+      </pre>
+    </div>
+  );
+}
+
 function DocumentViewer({ filename, conversationId, targetPage, onClose, onSummarize, onDelete }) {
   const [pages, setPages] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -1101,6 +1134,12 @@ function Chat({ user, onSignOut }) {
                       <div className="message-content">
                         <Markdown
                           components={{
+                            code: ({ inline, className, children, ...props }) => {
+                              if (inline) {
+                                return <code className={className} {...props}>{children}</code>;
+                              }
+                              return <CodeBlock className={className} {...props}>{children}</CodeBlock>;
+                            },
                             a: ({ href, children }) => {
                               if (href && href.startsWith('#citation:')) {
                                 const parts = href.replace('#citation:', '').split(':');
@@ -1437,6 +1476,12 @@ function MessageBubble({
           {assistant ? (
             <Markdown
               components={{
+                code: ({ inline, className, children, ...props }) => {
+                  if (inline) {
+                    return <code className={className} {...props}>{children}</code>;
+                  }
+                  return <CodeBlock className={className} {...props}>{children}</CodeBlock>;
+                },
                 a: ({ href, children }) => {
                   if (href && href.startsWith('#citation:')) {
                     const parts = href.replace('#citation:', '').split(':');
