@@ -1,6 +1,15 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import mermaid from 'mermaid';
 import { api } from './api.js';
+
+mermaid.initialize({
+  startOnLoad: false,
+  theme: 'dark',
+  securityLevel: 'loose',
+  fontFamily: 'Inter, system-ui, sans-serif',
+});
 
 const suggestions = [
   {
@@ -28,6 +37,14 @@ const suggestions = [
     text: 'Help me build a structured strategic execution plan. Ask me what I am building.',
     icon: 'zap',
   },
+];
+
+const PERSONA_PRESETS = [
+  { label: 'General Orbit', prompt: '' },
+  { label: 'System Architect', prompt: 'Adopt senior software architect persona. Emphasize modular design, scalability, clean code, and latency trade-offs.' },
+  { label: 'Security Auditor', prompt: 'Adopt senior cybersecurity auditor persona. Scrutinize code for CVEs, injection, and security vulnerabilities.' },
+  { label: 'Research Analyst', prompt: 'Adopt research scientist persona. Cite foundational principles, theoretical trade-offs, and empirical benchmarks.' },
+  { label: 'Executive Brief', prompt: 'Provide high-level executive summaries with key takeaways, bulleted impact points, and risk trade-offs.' },
 ];
 
 function Icon({ name, size = 20 }) {
@@ -78,6 +95,37 @@ function Icon({ name, size = 20 }) {
     ),
     menu: <path d="M4 6h16M4 12h16M4 18h16" />,
     close: <path d="M18 6L6 18M6 6l12 12" />,
+    pin: (
+      <>
+        <line x1="12" y1="17" x2="12" y2="22" />
+        <path d="M5 17h14v-2l-2-3V5a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7l-2 3v2z" />
+      </>
+    ),
+    pencil: (
+      <>
+        <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+      </>
+    ),
+    broom: (
+      <>
+        <path d="M14 2l4 4L7 17l-4 1 1-4L14 2z" />
+        <path d="M3 21h18" />
+      </>
+    ),
+    branch: (
+      <>
+        <line x1="6" y1="3" x2="6" y2="15" />
+        <circle cx="18" cy="6" r="3" />
+        <circle cx="6" cy="18" r="3" />
+        <path d="M18 9a9 9 0 0 1-9 9" />
+      </>
+    ),
+    brain: (
+      <>
+        <path d="M9.5 2a3.5 3.5 0 0 0-3.5 3.5c0 .3.04.59.11.87A3.5 3.5 0 0 0 4 9.5a3.5 3.5 0 0 0 1.25 2.68A3.5 3.5 0 0 0 4 14.5a3.5 3.5 0 0 0 3.5 3.5c.34 0 .66-.05.97-.14A3.5 3.5 0 0 0 12 20a3.5 3.5 0 0 0 3.53-2.14c.31.09.63.14.97.14a3.5 3.5 0 0 0 3.5-3.5 3.5 3.5 0 0 0-1.25-2.68A3.5 3.5 0 0 0 20 9.5a3.5 3.5 0 0 0-2.11-3.13c.07-.28.11-.57.11-.87A3.5 3.5 0 0 0 14.5 2c-1.12 0-2.1.53-2.5 1.34A3.01 3.01 0 0 0 9.5 2z" />
+        <path d="M12 4v16" />
+      </>
+    ),
     send: (
       <>
         <line x1="22" y1="2" x2="11" y2="13" />
@@ -126,6 +174,33 @@ function Icon({ name, size = 20 }) {
       <>
         <circle cx="11" cy="11" r="8" />
         <line x1="21" y1="21" x2="16.65" y2="16.65" />
+      </>
+    ),
+    mic: (
+      <>
+        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+        <line x1="12" y1="19" x2="12" y2="23" />
+        <line x1="8" y1="23" x2="16" y2="23" />
+      </>
+    ),
+    volume: (
+      <>
+        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+        <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07" />
+      </>
+    ),
+    gauge: (
+      <>
+        <path d="M12 2v4M4.93 4.93l2.83 2.83M2 12h4M20 12h2M19.07 4.93l-2.83 2.83" />
+        <circle cx="12" cy="14" r="8" />
+        <line x1="12" y1="14" x2="15" y2="11" />
+      </>
+    ),
+    sparkles: (
+      <>
+        <path d="M12 3l1.912 5.813a2 2 0 0 0 1.275 1.275L21 12l-5.813 1.912a2 2 0 0 0-1.275 1.275L12 21l-1.912-5.813a2 2 0 0 0-1.275-1.275L3 12l5.813-1.912a2 2 0 0 0 1.275-1.275L12 3z" />
+        <path d="M5 3v4M3 5h4" />
       </>
     ),
   };
@@ -178,7 +253,139 @@ function formatCitations(text, defaultDoc) {
   return formatted;
 }
 
-function DocumentViewer({ filename, conversationId, targetPage, onClose }) {
+function MermaidRenderer({ chart }) {
+  const [svg, setSvg] = useState('');
+  const [error, setError] = useState(null);
+  const containerId = useRef(`mermaid-${Math.random().toString(36).slice(2, 10)}`);
+
+  useEffect(() => {
+    let active = true;
+    if (!chart || !chart.trim()) return;
+
+    mermaid
+      .render(containerId.current, chart.trim())
+      .then(({ svg: renderedSvg }) => {
+        if (active) {
+          setSvg(renderedSvg);
+          setError(null);
+        }
+      })
+      .catch((err) => {
+        if (active) {
+          console.warn('Mermaid render error:', err);
+          setError(err?.message || 'Diagram syntax error');
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [chart]);
+
+  if (error) {
+    return (
+      <div className="mermaid-fallback-box">
+        <div className="mermaid-fallback-note">⚠️ Could not render visual diagram. Displaying raw source:</div>
+        <pre className="mermaid-raw-syntax"><code>{chart}</code></pre>
+      </div>
+    );
+  }
+
+  if (!svg) {
+    return <div className="mermaid-loading">Rendering visual diagram...</div>;
+  }
+
+  return (
+    <div
+      className="mermaid-svg-wrapper"
+      dangerouslySetInnerHTML={{ __html: svg }}
+    />
+  );
+}
+
+function HtmlPreview({ code }) {
+  return (
+    <div className="html-live-sandbox">
+      <iframe
+        title="Interactive HTML/SVG Preview"
+        sandbox="allow-scripts allow-modals"
+        srcDoc={code}
+        className="live-preview-iframe"
+      />
+    </div>
+  );
+}
+
+function CodeBlock({ className, children, ...props }) {
+  const [copied, setCopied] = useState(false);
+  const match = /language-(\w+)/.exec(className || '');
+  const language = (match ? match[1] : '').toLowerCase();
+  const codeString = String(children).replace(/\n$/, '');
+
+  const isMermaid = language === 'mermaid';
+  const isHtmlOrSvg = language === 'html' || language === 'svg';
+  const hasPreview = isMermaid || isHtmlOrSvg;
+
+  const [tab, setTab] = useState(isMermaid ? 'preview' : 'code');
+
+  function handleCopy() {
+    navigator.clipboard.writeText(codeString);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  }
+
+  return (
+    <div className={`code-block-container ${hasPreview ? 'has-artifact-preview' : ''}`}>
+      <div className="code-block-header">
+        <div className="code-block-meta">
+          <span className="code-block-lang">{language || 'code'}</span>
+          {hasPreview && (
+            <div className="artifact-tabs">
+              <button
+                type="button"
+                className={`artifact-tab-btn ${tab === (isMermaid ? 'preview' : 'code') ? 'active' : ''}`}
+                onClick={() => setTab(isMermaid ? 'preview' : 'code')}
+              >
+                {isMermaid ? '📊 Visual Diagram' : '💻 Code'}
+              </button>
+              <button
+                type="button"
+                className={`artifact-tab-btn ${tab === (isMermaid ? 'code' : 'preview') ? 'active' : ''}`}
+                onClick={() => setTab(isMermaid ? 'code' : 'preview')}
+              >
+                {isMermaid ? '📝 Raw Syntax' : '👁️ Live Preview'}
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="code-block-actions">
+          <button
+            type="button"
+            className="code-copy-btn"
+            onClick={handleCopy}
+            title="Copy code to clipboard"
+          >
+            <Icon name={copied ? 'check' : 'copy'} size={12} />
+            <span>{copied ? 'Copied!' : 'Copy Code'}</span>
+          </button>
+        </div>
+      </div>
+
+      {isMermaid && tab === 'preview' ? (
+        <MermaidRenderer chart={codeString} />
+      ) : isHtmlOrSvg && tab === 'preview' ? (
+        <HtmlPreview code={codeString} />
+      ) : (
+        <pre className={className}>
+          <code {...props}>{children}</code>
+        </pre>
+      )}
+    </div>
+  );
+}
+
+function DocumentViewer({ filename, conversationId, targetPage, onClose, onSummarize, onDelete }) {
   const [pages, setPages] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -203,6 +410,32 @@ function DocumentViewer({ filename, conversationId, targetPage, onClose }) {
     }
   }, [targetPage, loading]);
 
+  const totalMatches = useMemo(() => {
+    if (!searchTerm || !searchTerm.trim()) return 0;
+    const clean = searchTerm.trim().toLowerCase();
+    return pages.reduce((acc, p) => {
+      const count = p.text.toLowerCase().split(clean).length - 1;
+      return acc + Math.max(count, 0);
+    }, 0);
+  }, [pages, searchTerm]);
+
+  function renderHighlightedText(text, query) {
+    if (!query || !query.trim()) return text;
+    const clean = query.trim();
+    const escaped = clean.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`(${escaped})`, 'gi');
+    const parts = text.split(regex);
+    return parts.map((part, i) =>
+      part.toLowerCase() === clean.toLowerCase() ? (
+        <mark key={i} className="doc-search-highlight">
+          {part}
+        </mark>
+      ) : (
+        part
+      )
+    );
+  }
+
   const filteredPages = pages.filter((p) =>
     searchTerm ? p.text.toLowerCase().includes(searchTerm.toLowerCase()) : true
   );
@@ -223,7 +456,32 @@ function DocumentViewer({ filename, conversationId, targetPage, onClose }) {
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
+            {searchTerm.trim() && (
+              <span className="search-match-count">
+                {totalMatches} {totalMatches === 1 ? 'match' : 'matches'}
+              </span>
+            )}
           </div>
+          {onSummarize && (
+            <button
+              className="icon-button"
+              onClick={() => onSummarize(filename)}
+              title="Summarize document"
+              aria-label="Summarize document"
+            >
+              <Icon name="zap" size={15} />
+            </button>
+          )}
+          {onDelete && (
+            <button
+              className="icon-button danger-icon"
+              onClick={() => onDelete(filename)}
+              title="Delete document"
+              aria-label="Delete document"
+            >
+              <Icon name="trash" size={15} />
+            </button>
+          )}
           <button className="icon-button" onClick={onClose} aria-label="Close document viewer">
             <Icon name="close" size={16} />
           </button>
@@ -251,7 +509,7 @@ function DocumentViewer({ filename, conversationId, targetPage, onClose }) {
                 <span>PAGE {page.page}</span>
                 {targetPage === page.page && <span className="citation-target-pill">Referenced Citation</span>}
               </header>
-              <div className="doc-page-text">{page.text}</div>
+              <div className="doc-page-text">{renderHighlightedText(page.text, searchTerm)}</div>
             </section>
           ))
         )}
@@ -391,6 +649,7 @@ function Chat({ user, onSignOut }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
 
   // Streaming & RAG states
   const [pendingUserText, setPendingUserText] = useState('');
@@ -398,6 +657,7 @@ function Chat({ user, onSignOut }) {
   const [documents, setDocuments] = useState([]);
   const [uploading, setUploading] = useState(false);
   const [uploadBanner, setUploadBanner] = useState('');
+  const [lastConfidence, setLastConfidence] = useState(null);
 
   // Split-screen viewer state
   const [viewerOpen, setViewerOpen] = useState(false);
@@ -406,12 +666,129 @@ function Chat({ user, onSignOut }) {
 
   // Quick action feedback
   const [copiedId, setCopiedId] = useState(null);
+  const [editingChatId, setEditingChatId] = useState(null);
+  const [editTitleDraft, setEditTitleDraft] = useState('');
+
+  // Token Efficiency & Voice states
+  const [selectedModel, setSelectedModel] = useState('gemini-3.5-flash');
+  const [tokenStats, setTokenStats] = useState(null);
+  const [showAnalytics, setShowAnalytics] = useState(false);
+  const [analyticsData, setAnalyticsData] = useState(null);
+  const [isListening, setIsListening] = useState(false);
+  const [speakingId, setSpeakingId] = useState(null);
+  const recognitionRef = useRef(null);
 
   const bottomRef = useRef(null);
   const scrollRef = useRef(null);
   const inputRef = useRef(null);
   const fileInputRef = useRef(null);
   const operationRef = useRef(false);
+
+  const [optimizing, setOptimizing] = useState(false);
+
+  async function handleOptimizePrompt() {
+    if (!draft.trim() || optimizing) return;
+    setOptimizing(true);
+    try {
+      const res = await api('/prompt/optimize', {
+        method: 'POST',
+        body: JSON.stringify({ prompt: draft }),
+      });
+      if (res.optimized) {
+        setDraft(res.optimized);
+      }
+    } catch (err) {
+      handleError(err);
+    } finally {
+      setOptimizing(false);
+    }
+  }
+
+  async function handleSelectPersona(promptText) {
+    if (!activeId) return;
+    try {
+      await api(`/conversations/${activeId}/persona`, {
+        method: 'PATCH',
+        body: JSON.stringify({ system_prompt: promptText }),
+      });
+      setConversations((items) =>
+        items.map((c) => (c.id === activeId ? { ...c, system_prompt: promptText } : c))
+      );
+    } catch (err) {
+      handleError(err);
+    }
+  }
+
+  async function toggleAnalyticsModal() {
+    if (!showAnalytics) {
+      try {
+        const data = await api('/analytics/tokens');
+        setAnalyticsData(data);
+      } catch (err) {
+        console.error('Failed to load token analytics', err);
+      }
+    }
+    setShowAnalytics(!showAnalytics);
+  }
+
+  function toggleVoiceInput() {
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      setError('Speech recognition is not supported in this browser. Please use Chrome, Edge, or Safari.');
+      return;
+    }
+
+    if (isListening) {
+      recognitionRef.current?.stop();
+      setIsListening(false);
+      return;
+    }
+
+    try {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = false;
+      recognition.interimResults = true;
+      recognition.lang = 'en-US';
+
+      recognition.onstart = () => setIsListening(true);
+      recognition.onresult = (event) => {
+        let transcript = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript;
+        }
+        setDraft((prev) => (prev ? `${prev} ${transcript}` : transcript));
+      };
+      recognition.onerror = () => setIsListening(false);
+      recognition.onend = () => setIsListening(false);
+
+      recognitionRef.current = recognition;
+      recognition.start();
+    } catch {
+      setIsListening(false);
+    }
+  }
+
+  function toggleSpeech(text, id) {
+    if (!('speechSynthesis' in window)) return;
+    if (speakingId === id) {
+      window.speechSynthesis.cancel();
+      setSpeakingId(null);
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const cleanText = text
+      .replace(/```[\s\S]*?```/g, 'Code block omitted.')
+      .replace(/[#*_`~>\[\]\(\)]/g, '')
+      .trim();
+
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    utterance.rate = 1.05;
+    utterance.pitch = 1.0;
+    utterance.onend = () => setSpeakingId(null);
+    utterance.onerror = () => setSpeakingId(null);
+    setSpeakingId(id);
+    window.speechSynthesis.speak(utterance);
+  }
 
   function handleError(err) {
     if (err.status === 401) onSignOut();
@@ -485,10 +862,41 @@ function Chat({ user, onSignOut }) {
     try {
       const conversation = await api(`/conversations/${id}`);
       setActiveId(id);
-      setMessages(conversation.messages);
+      const msgs = conversation.messages || [];
+      setMessages(msgs);
       setDraft('');
       setSidebarOpen(false);
       await loadDocuments(id);
+
+      // Re-hydrate session token statistics from persisted messages
+      const totalToks = msgs.reduce((acc, m) => acc + (m.total_tokens || 0), 0);
+      const promptToks = msgs.reduce((acc, m) => acc + (m.prompt_tokens || 0), 0);
+      const compToks = msgs.reduce((acc, m) => acc + (m.completion_tokens || 0), 0);
+      if (totalToks > 0) {
+        setTokenStats({
+          total_tokens: totalToks,
+          prompt_tokens: promptToks,
+          completion_tokens: compToks,
+        });
+      }
+
+      // Re-hydrate follow-up suggestions for the latest assistant reply if missing
+      if (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant') {
+        api(`/conversations/${id}/suggestions`)
+          .then((res) => {
+            if (res.suggestions && res.suggestions.length) {
+              setMessages((current) => {
+                if (!current.length) return current;
+                const last = current[current.length - 1];
+                if (last.role === 'assistant' && (!last.suggestions || !last.suggestions.length)) {
+                  return [...current.slice(0, -1), { ...last, suggestions: res.suggestions }];
+                }
+                return current;
+              });
+            }
+          })
+          .catch(() => {});
+      }
     } catch (err) {
       handleError(err);
     } finally {
@@ -512,6 +920,44 @@ function Chat({ user, onSignOut }) {
     } finally {
       operationRef.current = false;
       setBusy(false);
+    }
+  }
+
+  async function togglePinChat(conversation) {
+    if (!conversation?.id) return;
+    const updatedPin = !conversation.is_pinned;
+    try {
+      await api(`/conversations/${conversation.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ is_pinned: updatedPin }),
+      });
+      setConversations((items) =>
+        items
+          .map((item) => (item.id === conversation.id ? { ...item, is_pinned: updatedPin } : item))
+          .sort((a, b) => (b.is_pinned ? 1 : 0) - (a.is_pinned ? 1 : 0))
+      );
+    } catch (err) {
+      handleError(err);
+    }
+  }
+
+  async function handleRenameChat(conversationId, newTitle) {
+    if (!newTitle || !newTitle.trim()) {
+      setEditingChatId(null);
+      return;
+    }
+    try {
+      const res = await api(`/conversations/${conversationId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ title: newTitle.trim() }),
+      });
+      setConversations((items) =>
+        items.map((item) => (item.id === conversationId ? { ...item, title: res.title } : item))
+      );
+    } catch (err) {
+      handleError(err);
+    } finally {
+      setEditingChatId(null);
     }
   }
 
@@ -565,6 +1011,7 @@ function Chat({ user, onSignOut }) {
     setError('');
     setPendingUserText(content);
     setStreamingText('');
+    setLastConfidence(null);
     setDraft('');
 
     let id = activeId;
@@ -582,12 +1029,16 @@ function Chat({ user, onSignOut }) {
       }
     }
 
+    const startTime = performance.now();
+    let firstTokenTime = null;
+    let streamSuggestions = [];
+
     try {
       const response = await fetch(`/api/conversations/${id}/messages/stream`, {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content, model: selectedModel }),
       });
 
       if (!response.ok) {
@@ -612,10 +1063,35 @@ function Chat({ user, onSignOut }) {
             try {
               const data = JSON.parse(line.slice(6));
               if (data.type === 'token') {
+                if (!firstTokenTime) {
+                  firstTokenTime = performance.now();
+                }
                 accumulated += data.token;
                 setStreamingText(accumulated);
+              } else if (data.type === 'sources') {
+                if (data.confidence) {
+                  setLastConfidence(data.confidence);
+                }
+              } else if (data.type === 'suggestions') {
+                streamSuggestions = data.suggestions || [];
+              } else if (data.type === 'usage') {
+                setTokenStats(data);
               } else if (data.type === 'done') {
-                setMessages((items) => [...items, ...data.messages]);
+                const endTime = performance.now();
+                const ttft = firstTokenTime ? Math.round(firstTokenTime - startTime) : null;
+                const durationSec = Math.max((endTime - startTime) / 1000, 0.05);
+                const asstMsg = (data.messages || []).find((m) => m.role === 'assistant');
+                const compTokens = asstMsg?.completion_tokens || Math.max(Math.round(accumulated.length / 4), 1);
+                const speed = Math.round(compTokens / durationSec);
+                const metrics = { ttft, speed, durationSec: durationSec.toFixed(1) };
+                const suggestions = streamSuggestions.length ? streamSuggestions : (data.suggestions || []);
+
+                const augmentedMessages = (data.messages || []).map((m) =>
+                  m.role === 'assistant'
+                    ? { ...m, metrics, suggestions }
+                    : m
+                );
+                setMessages((items) => [...items, ...augmentedMessages]);
                 setConversations((items) => [
                   data.conversation,
                   ...items.filter((item) => item.id !== id),
@@ -654,13 +1130,106 @@ function Chat({ user, onSignOut }) {
     setTimeout(() => setCopiedId(null), 2000);
   }
 
-  async function handleExportMarkdown() {
+  async function handleExport(format = 'markdown') {
     if (!activeId) return;
     try {
-      window.open(`/api/conversations/${activeId}/export`, '_blank');
+      const res = await fetch(`/api/conversations/${activeId}/export?format=${format}`, {
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error('Export failed');
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const cleanTitle = (active?.title || 'conversation')
+        .replace(/[^\w\s-]/g, '')
+        .trim()
+        .replace(/\s+/g, '_')
+        .slice(0, 32);
+      a.download = `${cleanTitle || 'orbit_export'}.${format === 'json' ? 'json' : 'md'}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
     } catch (err) {
       handleError(err);
     }
+  }
+
+  async function handleFork(messageId = null) {
+    if (!activeId || operationRef.current) return;
+    operationRef.current = true;
+    setBusy(true);
+    setError('');
+    try {
+      const url = messageId
+        ? `/conversations/${activeId}/fork?message_id=${messageId}`
+        : `/conversations/${activeId}/fork`;
+      const forked = await api(url, { method: 'POST' });
+      setConversations((items) => [forked, ...items]);
+      setActiveId(forked.id);
+      setMessages(forked.messages || []);
+      await loadDocuments(forked.id);
+      setUploadBanner(`Forked conversation branch: "${forked.title}"`);
+      setTimeout(() => setUploadBanner(''), 4000);
+    } catch (err) {
+      handleError(err);
+    } finally {
+      operationRef.current = false;
+      setBusy(false);
+    }
+  }
+
+  async function handleCompactContext() {
+    if (!activeId || operationRef.current) return;
+    operationRef.current = true;
+    setBusy(true);
+    setError('');
+    setUploadBanner('Compressing and compacting prior context with Gemini worker model...');
+    try {
+      const res = await api(`/conversations/${activeId}/compact`, { method: 'POST' });
+      setMessages(res.messages || []);
+      const totalToks = (res.messages || []).reduce((acc, m) => acc + (m.total_tokens || 0), 0);
+      const promptToks = (res.messages || []).reduce((acc, m) => acc + (m.prompt_tokens || 0), 0);
+      const compToks = (res.messages || []).reduce((acc, m) => acc + (m.completion_tokens || 0), 0);
+      setTokenStats({
+        total_tokens: totalToks,
+        prompt_tokens: promptToks,
+        completion_tokens: compToks,
+      });
+      setUploadBanner('Compacted session memory! Intermediate turns condensed into dense memory anchor.');
+      setTimeout(() => setUploadBanner(''), 4000);
+    } catch (err) {
+      handleError(err);
+      setUploadBanner('');
+    } finally {
+      operationRef.current = false;
+      setBusy(false);
+    }
+  }
+
+  async function handleDeleteDocument(filename) {
+    if (!activeId || !filename) return;
+    try {
+      await api(`/conversations/${activeId}/documents/${encodeURIComponent(filename)}`, {
+        method: 'DELETE',
+      });
+      const updated = documents.filter((d) => d !== filename);
+      setDocuments(updated);
+      if (viewerDoc === filename) {
+        setViewerDoc(updated[0] || '');
+        if (updated.length === 0) setViewerOpen(false);
+      }
+      setUploadBanner(`Removed "${filename}" from session context.`);
+      setTimeout(() => setUploadBanner(''), 4000);
+    } catch (err) {
+      handleError(err);
+    }
+  }
+
+  async function handleSummarizeDocument(filename) {
+    if (!activeId || !filename) return;
+    send(null, `Provide a concise executive summary and key takeaways for the attached document "${filename}".`);
   }
 
   function handleRegenerate() {
@@ -678,7 +1247,7 @@ function Chat({ user, onSignOut }) {
     operationRef.current = true;
     setBusy(true);
     try {
-      await api('/auth/logout', { method: 'POST' });
+      await api('/auth/logout', { method: 'POST' }).catch(() => {});
       onSignOut();
     } catch (err) {
       handleError(err);
@@ -689,6 +1258,9 @@ function Chat({ user, onSignOut }) {
   }
 
   const active = conversations.find((item) => item.id === activeId);
+  const filteredConversations = conversations
+    .filter((item) => (searchQuery ? item.title.toLowerCase().includes(searchQuery.toLowerCase()) : true))
+    .sort((a, b) => (b.is_pinned ? 1 : 0) - (a.is_pinned ? 1 : 0));
   const empty = messages.length === 0 && !pendingUserText && !streamingText;
 
   return (
@@ -718,41 +1290,106 @@ function Chat({ user, onSignOut }) {
           <span>New Session</span>
         </button>
 
+        <div className="sidebar-search">
+          <Icon name="search" size={13} />
+          <input
+            type="text"
+            placeholder="Search sessions..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            aria-label="Filter conversations"
+          />
+        </div>
+
         <div className="history-label">
           <span>SESSIONS</span>
-          <span className="count-pill">{conversations.length}</span>
+          <span className="count-pill">{filteredConversations.length}</span>
         </div>
 
         <nav className="history" aria-label="Saved sessions">
           {loading ? (
             <p className="history-empty">Loading sessions...</p>
-          ) : conversations.length === 0 ? (
+          ) : filteredConversations.length === 0 ? (
             <p className="history-empty">
-              No sessions yet.<br />Initiate a dialogue or upload a document to begin.
+              {searchQuery ? `No sessions matching "${searchQuery}".` : 'No sessions yet.'}
             </p>
           ) : (
-            conversations.map((item) => (
+            filteredConversations.map((item) => (
               <div
-                className={`history-row ${activeId === item.id ? 'selected' : ''}`}
+                className={`history-row ${activeId === item.id ? 'selected' : ''} ${item.is_pinned ? 'is-pinned-row' : ''}`}
                 key={item.id}
               >
-                <button
-                  className="history-item"
-                  disabled={busy}
-                  onClick={() => selectChat(item.id)}
-                  title={item.title}
-                >
-                  <Icon name="chat" size={15} />
-                  <span>{item.title}</span>
-                </button>
-                <button
-                  className="delete-chat"
-                  disabled={busy}
-                  onClick={() => removeChat(item)}
-                  aria-label={`Delete ${item.title}`}
-                >
-                  <Icon name="trash" size={14} />
-                </button>
+                {editingChatId === item.id ? (
+                  <div className="rename-input-wrap">
+                    <input
+                      type="text"
+                      className="rename-chat-input"
+                      value={editTitleDraft}
+                      onChange={(e) => setEditTitleDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') handleRenameChat(item.id, editTitleDraft);
+                        if (e.key === 'Escape') setEditingChatId(null);
+                      }}
+                      onBlur={() => handleRenameChat(item.id, editTitleDraft)}
+                      autoFocus
+                    />
+                  </div>
+                ) : (
+                  <button
+                    className="history-item"
+                    disabled={busy}
+                    onClick={() => selectChat(item.id)}
+                    title={`${item.title} (Double-click to rename)`}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      setEditingChatId(item.id);
+                      setEditTitleDraft(item.title);
+                    }}
+                  >
+                    <Icon name={item.is_pinned ? 'pin' : 'chat'} size={15} />
+                    <span className="history-item-title">{item.title}</span>
+                  </button>
+                )}
+
+                <div className="history-actions">
+                  <button
+                    className={`history-action-btn pin-btn ${item.is_pinned ? 'active-pin' : ''}`}
+                    disabled={busy}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      togglePinChat(item);
+                    }}
+                    title={item.is_pinned ? 'Unpin session' : 'Pin session to top'}
+                    aria-label={item.is_pinned ? 'Unpin' : 'Pin'}
+                  >
+                    <Icon name="pin" size={13} />
+                  </button>
+                  <button
+                    className="history-action-btn rename-btn"
+                    disabled={busy}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setEditingChatId(item.id);
+                      setEditTitleDraft(item.title);
+                    }}
+                    title="Rename session"
+                    aria-label="Rename session"
+                  >
+                    <Icon name="pencil" size={12} />
+                  </button>
+                  <button
+                    className="history-action-btn delete-chat"
+                    disabled={busy}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      removeChat(item);
+                    }}
+                    aria-label={`Delete ${item.title}`}
+                    title="Delete session"
+                  >
+                    <Icon name="trash" size={13} />
+                  </button>
+                </div>
               </div>
             ))
           )}
@@ -797,19 +1434,68 @@ function Chat({ user, onSignOut }) {
                 <span className="session-dot" />
                 <span>{active?.title || 'Orbit Workspace'}</span>
               </div>
+              {active && (
+                <div className="persona-selector-wrap">
+                  <Icon name="sparkles" size={13} />
+                  <select
+                    className="persona-select"
+                    value={active.system_prompt || ''}
+                    onChange={(e) => handleSelectPersona(e.target.value)}
+                    title="Set custom system persona for this orbit session"
+                  >
+                    {PERSONA_PRESETS.map((p) => (
+                      <option key={p.label} value={p.prompt}>
+                        {p.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
             </div>
 
             <div className="header-right">
               {messages.length > 0 && (
-                <button
-                  type="button"
-                  className="header-action-button"
-                  onClick={handleExportMarkdown}
-                  title="Export conversation as Markdown"
-                >
-                  <Icon name="download" size={14} />
-                  <span>Export</span>
-                </button>
+                <div style={{ display: 'inline-flex', gap: '4px' }}>
+                  {messages.length >= 4 && (
+                    <button
+                      type="button"
+                      className="header-action-button compact-btn"
+                      onClick={handleCompactContext}
+                      title="Compact conversation memory (Summarize prior turns to reduce token footprint by 75%)"
+                      disabled={busy}
+                    >
+                      <Icon name="broom" size={13} />
+                      <span>Compact</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="header-action-button"
+                    onClick={() => handleFork()}
+                    title="Fork this entire conversation into a new branch"
+                  >
+                    <Icon name="branch" size={14} />
+                    <span>Branch</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="header-action-button"
+                    onClick={() => handleExport('markdown')}
+                    title="Export conversation as Markdown"
+                  >
+                    <Icon name="download" size={14} />
+                    <span>Export MD</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="header-action-button"
+                    onClick={() => handleExport('json')}
+                    title="Export conversation as JSON"
+                  >
+                    <Icon name="download" size={14} />
+                    <span>JSON</span>
+                  </button>
+                </div>
               )}
 
               {documents.length > 0 && (
@@ -824,6 +1510,18 @@ function Chat({ user, onSignOut }) {
                 >
                   <Icon name="columns" size={14} />
                   <span>Split Viewer ({documents.length})</span>
+                </button>
+              )}
+
+              {tokenStats && (
+                <button
+                  type="button"
+                  className="header-action-button token-badge"
+                  onClick={toggleAnalyticsModal}
+                  title="Click to view Token Efficiency Analytics"
+                >
+                  <Icon name="gauge" size={13} />
+                  <span>{tokenStats.total_tokens || 0} tok</span>
                 </button>
               )}
 
@@ -890,6 +1588,13 @@ function Chat({ user, onSignOut }) {
                     onCopy={copyToClipboard}
                     copied={copiedId === message.id}
                     onRegenerate={handleRegenerate}
+                    onSpeak={toggleSpeech}
+                    speaking={speakingId === message.id}
+                    tokens={message.completion_tokens || message.total_tokens}
+                    metrics={message.metrics}
+                    suggestions={message.suggestions}
+                    onSuggestionClick={(sugText) => send(null, sugText)}
+                    onFork={handleFork}
                   />
                 ))}
 
@@ -911,10 +1616,26 @@ function Chat({ user, onSignOut }) {
                       <div className="message-author">
                         <span className="author-name">Orbit</span>
                         <span className="ai-tag live-stream">Streaming</span>
+                        {lastConfidence && (
+                          <span
+                            className={`confidence-pill ${lastConfidence.level.toLowerCase()}`}
+                            title={`Grounding confidence: ${lastConfidence.percentage}% based on verified source affinity`}
+                          >
+                            {lastConfidence.percentage}% Grounded
+                          </span>
+                        )}
                       </div>
                       <div className="message-content">
                         <Markdown
+                          remarkPlugins={[remarkGfm]}
                           components={{
+                            pre: ({ children }) => <>{children}</>,
+                            code: ({ inline, className, children, ...props }) => {
+                              if (inline) {
+                                return <code className={className} {...props}>{children}</code>;
+                              }
+                              return <CodeBlock className={className} {...props}>{children}</CodeBlock>;
+                            },
                             a: ({ href, children }) => {
                               if (href && href.startsWith('#citation:')) {
                                 const parts = href.replace('#citation:', '').split(':');
@@ -970,19 +1691,45 @@ function Chat({ user, onSignOut }) {
                 </span>
                 <div className="docs-chips">
                   {documents.map((doc) => (
-                    <button
+                    <div
                       key={doc}
-                      type="button"
                       className={`doc-chip ${viewerDoc === doc && viewerOpen ? 'active' : ''}`}
-                      onClick={() => {
-                        setViewerDoc(doc);
-                        setViewerOpen(true);
-                      }}
-                      title="Click to view in Split Screen"
                     >
-                      <Icon name="file" size={12} />
-                      <span>{doc}</span>
-                    </button>
+                      <button
+                        type="button"
+                        className="doc-chip-label"
+                        onClick={() => {
+                          setViewerDoc(doc);
+                          setViewerOpen(true);
+                        }}
+                        title="Click to view in Split Screen"
+                      >
+                        <Icon name="file" size={12} />
+                        <span>{doc}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="doc-chip-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSummarizeDocument(doc);
+                        }}
+                        title={`Summarize ${doc}`}
+                      >
+                        <Icon name="zap" size={11} />
+                      </button>
+                      <button
+                        type="button"
+                        className="doc-chip-btn danger"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteDocument(doc);
+                        }}
+                        title={`Remove ${doc}`}
+                      >
+                        <Icon name="close" size={11} />
+                      </button>
+                    </div>
                   ))}
                 </div>
               </div>
@@ -1048,9 +1795,39 @@ function Chat({ user, onSignOut }) {
                 </div>
 
                 <div className="composer-actions">
-                  <span className="char-count">
-                    {draft.length > 6000 ? `${draft.length}/8000` : ''}
+                  <button
+                    type="button"
+                    className={`model-selector-btn ${selectedModel === 'gemini-3.5-pro' ? 'pro' : 'flash'}`}
+                    onClick={() => setSelectedModel(selectedModel === 'gemini-3.5-flash' ? 'gemini-3.5-pro' : 'gemini-3.5-flash')}
+                    title={`Current: ${selectedModel === 'gemini-3.5-pro' ? 'Gemini 3.5 Pro (Deep Reasoning)' : 'Gemini 3.5 Flash (Ultra-Low Latency)'} - Click to switch`}
+                    disabled={busy || loading || uploading}
+                  >
+                    <Icon name={selectedModel === 'gemini-3.5-pro' ? 'brain' : 'zap'} size={12} />
+                    <span>{selectedModel === 'gemini-3.5-pro' ? 'Pro 3.5' : 'Flash 3.5'}</span>
+                  </button>
+                  <span className="char-count" title="Estimated input prompt tokens">
+                    ⚡ ~{Math.max(Math.ceil(draft.length / 4), 0)} tok {draft.length > 5000 ? `(${draft.length}/8000)` : ''}
                   </span>
+                  <button
+                    type="button"
+                    className={`icon-button polish-prompt-btn ${optimizing ? 'is-optimizing' : ''}`}
+                    onClick={handleOptimizePrompt}
+                    disabled={!draft.trim() || busy || loading || uploading || optimizing}
+                    title="✨ Enhance Prompt (Rewrite with high-precision prompt engineering)"
+                    aria-label="Enhance prompt"
+                  >
+                    <Icon name="sparkles" size={17} />
+                  </button>
+                  <button
+                    type="button"
+                    className={`icon-button voice-btn ${isListening ? 'listening-pulse' : ''}`}
+                    onClick={toggleVoiceInput}
+                    disabled={busy || loading || uploading}
+                    title={isListening ? 'Listening... click to stop' : 'Voice input (Speech to text)'}
+                    aria-label="Voice input"
+                  >
+                    <Icon name="mic" size={17} />
+                  </button>
                   <button
                     className="send-button"
                     aria-label="Send message"
@@ -1071,7 +1848,101 @@ function Chat({ user, onSignOut }) {
             conversationId={activeId}
             targetPage={targetCitationPage}
             onClose={() => setViewerOpen(false)}
+            onSummarize={handleSummarizeDocument}
+            onDelete={handleDeleteDocument}
           />
+        )}
+
+        {showAnalytics && (
+          <div className="analytics-backdrop" onClick={() => setShowAnalytics(false)}>
+            <div className="analytics-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="analytics-header">
+                <div className="analytics-title">
+                  <Icon name="gauge" size={18} />
+                  <span>Token Efficiency & Usage Analytics</span>
+                </div>
+                <button
+                  className="icon-button"
+                  onClick={() => setShowAnalytics(false)}
+                  aria-label="Close analytics"
+                >
+                  <Icon name="close" size={16} />
+                </button>
+              </div>
+
+              <div className="analytics-grid">
+                <div className="analytics-card highlight">
+                  <div className="analytics-card-label">Estimated Tokens Saved</div>
+                  <div className="analytics-card-val">
+                    {(analyticsData?.estimated_tokens_saved || 0).toLocaleString()}
+                  </div>
+                </div>
+
+                <div className="analytics-card cost-saving">
+                  <div className="analytics-card-label">Estimated Cost Saved</div>
+                  <div className="analytics-card-val">
+                    ${(analyticsData?.cost_saved_usd ?? 0).toFixed(5)}
+                  </div>
+                </div>
+
+                <div className="analytics-card cache-saving">
+                  <div className="analytics-card-label">Context Cache Saved ({analyticsData?.cached_discount || '75%'} off)</div>
+                  <div className="analytics-card-val">
+                    ${(analyticsData?.cache_savings_usd ?? 0).toFixed(5)}
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
+                    {(analyticsData?.total_cached_tokens || 0).toLocaleString()} cached tokens
+                  </div>
+                </div>
+
+                <div className="analytics-card">
+                  <div className="analytics-card-label">Total Tokens Billed</div>
+                  <div className="analytics-card-val">
+                    {(analyticsData?.total_tokens || 0).toLocaleString()}
+                  </div>
+                </div>
+
+                <div className="analytics-card">
+                  <div className="analytics-card-label">Estimated API Cost</div>
+                  <div className="analytics-card-val">
+                    ${(analyticsData?.estimated_cost_usd ?? 0).toFixed(5)}
+                  </div>
+                </div>
+
+                <div className="analytics-card">
+                  <div className="analytics-card-label">Prompt Input Tokens</div>
+                  <div className="analytics-card-val">
+                    {(analyticsData?.total_prompt_tokens || 0).toLocaleString()}
+                  </div>
+                </div>
+
+                <div className="analytics-card">
+                  <div className="analytics-card-label">Completion Tokens</div>
+                  <div className="analytics-card-val">
+                    {(analyticsData?.total_completion_tokens || 0).toLocaleString()}
+                  </div>
+                </div>
+
+                <div className="analytics-card">
+                  <div className="analytics-card-label">Efficiency Ratio</div>
+                  <div className="analytics-card-val">
+                    {analyticsData?.efficiency_ratio_percent || 0}%
+                  </div>
+                </div>
+
+                <div className="analytics-card">
+                  <div className="analytics-card-label">Avg Tokens / Turn</div>
+                  <div className="analytics-card-val">
+                    {analyticsData?.average_tokens_per_message || 0}
+                  </div>
+                </div>
+              </div>
+
+              <div className="analytics-footer-note">
+                Gemini Flash rates ($0.075/1M input, $0.30/1M output). Savings driven by Orbit pre-embedding text compression, hybrid routing, and sliding context window budget.
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </div>
@@ -1088,6 +1959,13 @@ function MessageBubble({
   onCopy,
   copied,
   onRegenerate,
+  onSpeak,
+  speaking,
+  tokens,
+  metrics,
+  suggestions,
+  onSuggestionClick,
+  onFork,
 }) {
   const assistant = role === 'assistant';
   return (
@@ -1102,8 +1980,30 @@ function MessageBubble({
             {assistant && <span className="ai-tag">Intelligence</span>}
           </div>
 
-          {assistant && (
-            <div className="message-tooltips">
+          <div className="message-tooltips">
+            {onFork && id && (
+              <button
+                type="button"
+                className="action-pill"
+                onClick={() => onFork(id)}
+                title="Branch conversation from this turn"
+              >
+                <Icon name="branch" size={12} />
+                <span>Branch</span>
+              </button>
+            )}
+            {assistant && onSpeak && (
+              <button
+                type="button"
+                className={`action-pill ${speaking ? 'active' : ''}`}
+                onClick={() => onSpeak(content, id)}
+                title={speaking ? 'Stop speech readout' : 'Listen with natural speech'}
+              >
+                <Icon name="volume" size={12} />
+                <span>{speaking ? 'Stop' : 'Listen'}</span>
+              </button>
+            )}
+            {assistant && (
               <button
                 type="button"
                 className="action-pill"
@@ -1113,7 +2013,8 @@ function MessageBubble({
                 <Icon name={copied ? 'check' : 'copy'} size={12} />
                 <span>{copied ? 'Copied' : 'Copy'}</span>
               </button>
-              {onRegenerate && (
+            )}
+              {assistant && onRegenerate && (
                 <button
                   type="button"
                   className="action-pill"
@@ -1124,14 +2025,21 @@ function MessageBubble({
                   <span>Regenerate</span>
                 </button>
               )}
-            </div>
-          )}
+          </div>
         </div>
 
         <div className="message-content">
           {assistant ? (
             <Markdown
+              remarkPlugins={[remarkGfm]}
               components={{
+                pre: ({ children }) => <>{children}</>,
+                code: ({ inline, className, children, ...props }) => {
+                  if (inline) {
+                    return <code className={className} {...props}>{children}</code>;
+                  }
+                  return <CodeBlock className={className} {...props}>{children}</CodeBlock>;
+                },
                 a: ({ href, children }) => {
                   if (href && href.startsWith('#citation:')) {
                     const parts = href.replace('#citation:', '').split(':');
@@ -1156,6 +2064,36 @@ function MessageBubble({
             <p className="user-text">{content}</p>
           )}
         </div>
+
+        {assistant && (metrics || tokens) && (
+          <div className="message-metrics-badge">
+            {metrics?.speed ? <span className="metric-pill">⚡ {metrics.speed} tok/s</span> : null}
+            {metrics?.ttft ? <span className="metric-pill">⏱️ {metrics.ttft}ms TTFT</span> : null}
+            {tokens ? <span className="metric-pill">🔢 {tokens} tok</span> : null}
+          </div>
+        )}
+
+        {assistant && suggestions && suggestions.length > 0 && (
+          <div className="followup-suggestions">
+            <div className="followup-label">
+              <Icon name="sparkles" size={13} />
+              <span>Suggested Follow-Ups:</span>
+            </div>
+            <div className="followup-chips">
+              {suggestions.map((sug, idx) => (
+                <button
+                  key={idx}
+                  type="button"
+                  className="followup-chip"
+                  onClick={() => onSuggestionClick && onSuggestionClick(sug)}
+                >
+                  <span>{sug}</span>
+                  <span className="followup-arrow">&rarr;</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </article>
   );
