@@ -1211,6 +1211,58 @@ svg {
   font-style: italic;
 }
 
+/* Markdown Tables */
+.message-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 13px;
+  text-align: left;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(15, 23, 42, 0.55);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+}
+
+.message-content thead {
+  background: rgba(30, 41, 59, 0.85);
+  border-bottom: 2px solid rgba(255, 255, 255, 0.15);
+}
+
+.message-content th {
+  padding: 10px 14px;
+  font-weight: 600;
+  color: #38bdf8;
+  letter-spacing: 0.3px;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.message-content th:last-child {
+  border-right: none;
+}
+
+.message-content td {
+  padding: 9px 14px;
+  color: #cbd5e1;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  border-right: 1px solid rgba(255, 255, 255, 0.04);
+  vertical-align: top;
+  line-height: 1.5;
+}
+
+.message-content td:last-child {
+  border-right: none;
+}
+
+.message-content tr:last-child td {
+  border-bottom: none;
+}
+
+.message-content tr:hover td {
+  background: rgba(255, 255, 255, 0.03);
+}
+
 /* Thinking Indicator */
 .thinking {
   display: flex;

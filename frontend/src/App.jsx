@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 import { api } from './api.js';
 
 const suggestions = [
@@ -720,10 +721,41 @@ function Chat({ user, onSignOut }) {
     try {
       const conversation = await api(`/conversations/${id}`);
       setActiveId(id);
-      setMessages(conversation.messages);
+      const msgs = conversation.messages || [];
+      setMessages(msgs);
       setDraft('');
       setSidebarOpen(false);
       await loadDocuments(id);
+
+      // Re-hydrate session token statistics from persisted messages
+      const totalToks = msgs.reduce((acc, m) => acc + (m.total_tokens || 0), 0);
+      const promptToks = msgs.reduce((acc, m) => acc + (m.prompt_tokens || 0), 0);
+      const compToks = msgs.reduce((acc, m) => acc + (m.completion_tokens || 0), 0);
+      if (totalToks > 0) {
+        setTokenStats({
+          total_tokens: totalToks,
+          prompt_tokens: promptToks,
+          completion_tokens: compToks,
+        });
+      }
+
+      // Re-hydrate follow-up suggestions for the latest assistant reply if missing
+      if (msgs.length > 0 && msgs[msgs.length - 1].role === 'assistant') {
+        api(`/conversations/${id}/suggestions`)
+          .then((res) => {
+            if (res.suggestions && res.suggestions.length) {
+              setMessages((current) => {
+                if (!current.length) return current;
+                const last = current[current.length - 1];
+                if (last.role === 'assistant' && (!last.suggestions || !last.suggestions.length)) {
+                  return [...current.slice(0, -1), { ...last, suggestions: res.suggestions }];
+                }
+                return current;
+              });
+            }
+          })
+          .catch(() => {});
+      }
     } catch (err) {
       handleError(err);
     } finally {
@@ -922,7 +954,24 @@ function Chat({ user, onSignOut }) {
   async function handleExport(format = 'markdown') {
     if (!activeId) return;
     try {
-      window.open(`/api/conversations/${activeId}/export?format=${format}`, '_blank');
+      const res = await fetch(`/api/conversations/${activeId}/export?format=${format}`, {
+        credentials: 'include',
+      });
+      if (!res.ok) throw new Error('Export failed');
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const cleanTitle = (active?.title || 'conversation')
+        .replace(/[^\w\s-]/g, '')
+        .trim()
+        .replace(/\s+/g, '_')
+        .slice(0, 32);
+      a.download = `${cleanTitle || 'orbit_export'}.${format === 'json' ? 'json' : 'md'}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
     } catch (err) {
       handleError(err);
     }
@@ -967,7 +1016,7 @@ function Chat({ user, onSignOut }) {
     operationRef.current = true;
     setBusy(true);
     try {
-      await api('/auth/logout', { method: 'POST' });
+      await api('/auth/logout', { method: 'POST' }).catch(() => {});
       onSignOut();
     } catch (err) {
       handleError(err);
@@ -1271,7 +1320,9 @@ function Chat({ user, onSignOut }) {
                       </div>
                       <div className="message-content">
                         <Markdown
+                          remarkPlugins={[remarkGfm]}
                           components={{
+                            pre: ({ children }) => <>{children}</>,
                             code: ({ inline, className, children, ...props }) => {
                               if (inline) {
                                 return <code className={className} {...props}>{children}</code>;
@@ -1641,7 +1692,9 @@ function MessageBubble({
         <div className="message-content">
           {assistant ? (
             <Markdown
+              remarkPlugins={[remarkGfm]}
               components={{
+                pre: ({ children }) => <>{children}</>,
                 code: ({ inline, className, children, ...props }) => {
                   if (inline) {
                     return <code className={className} {...props}>{children}</code>;
