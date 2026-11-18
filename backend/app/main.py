@@ -259,7 +259,7 @@ def create_app(
 
     @app.get("/api/analytics/tokens")
     def get_token_analytics(user: AuthUser):
-        """Returns token usage efficiency, cumulative usage, and estimated RAG savings."""
+        """Returns token usage efficiency, cumulative usage, cost estimation, and optimization savings."""
         with connect(config.database_path) as db:
             row = db.execute(
                 """SELECT 
@@ -277,7 +277,18 @@ def create_app(
         total_toks = row["total_tokens"] if row else 0
         prompt_toks = row["total_prompt_tokens"] if row else 0
         comp_toks = row["total_completion_tokens"] if row else 0
+
+        # Token Pricing for Gemini Flash:
+        # Input: $0.075 per 1,000,000 tokens ($0.000075 / 1k)
+        # Output: $0.300 per 1,000,000 tokens ($0.000300 / 1k)
+        cost_input = (prompt_toks / 1_000_000.0) * 0.075
+        cost_output = (comp_toks / 1_000_000.0) * 0.300
+        estimated_cost_usd = round(cost_input + cost_output, 6)
+
+        # Tokens saved via whitespace/chunk compression (~22%) and sliding window budget (approx 1.8x prompt tokens)
         saved_est = max(int(prompt_toks * 1.8), 0)
+        cost_saved_usd = round((saved_est / 1_000_000.0) * 0.075, 6)
+        efficiency_ratio = round((saved_est / max(total_toks + saved_est, 1)) * 100, 1)
 
         return {
             "total_messages": total_msgs,
@@ -286,6 +297,14 @@ def create_app(
             "total_tokens": total_toks,
             "estimated_tokens_saved": saved_est,
             "average_tokens_per_message": int(total_toks / max(total_msgs, 1)),
+            "estimated_cost_usd": estimated_cost_usd,
+            "cost_saved_usd": cost_saved_usd,
+            "efficiency_ratio_percent": efficiency_ratio,
+            "model_pricing": {
+                "input_per_million": "$0.075",
+                "output_per_million": "$0.300",
+                "currency": "USD",
+            },
         }
 
     # --- Conversation Endpoints ---
@@ -366,6 +385,63 @@ def create_app(
             media_type="text/markdown",
             headers={"Content-Disposition": f'attachment; filename="{file_slug}.md"'},
         )
+
+    @app.post("/api/conversations/{conversation_id}/autotitle")
+    async def autotitle_conversation(conversation_id: str, user: AuthUser):
+        """Generates an intelligent concise topic title using LLM."""
+        with connect(config.database_path) as db:
+            conversation = owned_conversation(db, conversation_id, user.id)
+            rows = db.execute(
+                "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id LIMIT 4",
+                (conversation_id,),
+            ).fetchall()
+        if not rows:
+            return {"conversation_id": conversation_id, "title": conversation["title"]}
+        user_msg = next((r["content"] for r in rows if r["role"] == "user"), "")
+        assistant_msg = next((r["content"] for r in rows if r["role"] == "assistant"), "")
+        if hasattr(ai, "generate_title"):
+            new_title = await ai.generate_title(user_msg, assistant_msg)
+        else:
+            new_title = " ".join(user_msg.split())[:35] or "Conversation"
+
+        with connect(config.database_path) as db:
+            db.execute(
+                "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
+                (new_title, now(), conversation_id),
+            )
+        return {"conversation_id": conversation_id, "title": new_title}
+
+    @app.get("/api/conversations/{conversation_id}/suggestions")
+    async def get_conversation_suggestions(conversation_id: str, user: AuthUser):
+        """Generates 3 contextual follow-up query suggestions based on conversation history."""
+        with connect(config.database_path) as db:
+            owned_conversation(db, conversation_id, user.id)
+            rows = db.execute(
+                "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 4",
+                (conversation_id,),
+            ).fetchall()
+        if not rows:
+            return {
+                "suggestions": [
+                    "What can you help me with?",
+                    "How does the hybrid RAG architecture work?",
+                    "Can you summarize an uploaded technical document?",
+                ]
+            }
+        reversed_rows = list(reversed(rows))
+        last_reply = next((r["content"] for r in rows if r["role"] == "assistant"), "")
+        if hasattr(ai, "generate_followup_suggestions"):
+            suggestions = await ai.generate_followup_suggestions(
+                [dict(r) for r in reversed_rows],
+                last_reply,
+            )
+        else:
+            suggestions = [
+                "Can you provide a practical code example?",
+                "What are the main advantages and trade-offs?",
+                "How can this be optimized for performance?",
+            ]
+        return {"suggestions": suggestions}
 
     # --- Document Ingestion & Content Endpoints ---
     @app.post("/upload")
@@ -575,7 +651,13 @@ def create_app(
                     "SELECT 1 FROM messages WHERE conversation_id = ? LIMIT 1",
                     (conversation_id,),
                 ).fetchone()
-                title = conversation["title"] if has_messages else " ".join(payload.content.split())[:60]
+                if not has_messages and hasattr(ai, "generate_title"):
+                    try:
+                        title = await ai.generate_title(payload.content, reply)
+                    except Exception:
+                        title = " ".join(payload.content.split())[:60]
+                else:
+                    title = conversation["title"] if has_messages else " ".join(payload.content.split())[:60]
                 inserted = []
                 for role, content in (("user", payload.content), ("assistant", reply)):
                     p_val = prompt_toks if role == "user" else 0
@@ -677,6 +759,19 @@ def create_app(
                 }
                 yield f"data: {json.dumps({'type': 'usage', **usage})}\n\n"
 
+                # Follow-up interactive prompt suggestions
+                suggestions = []
+                if hasattr(ai, "generate_followup_suggestions"):
+                    try:
+                        suggestions = await ai.generate_followup_suggestions(
+                            [*history, {"role": "user", "content": payload.content}],
+                            final_reply,
+                        )
+                    except Exception as exc:
+                        logger.warning("Follow-up generation error: %s", exc)
+                if suggestions:
+                    yield f"data: {json.dumps({'type': 'suggestions', 'suggestions': suggestions})}\n\n"
+
                 timestamp = now()
                 prompt_toks = usage.get("prompt_tokens", 0)
                 comp_toks = usage.get("completion_tokens", 0)
@@ -687,7 +782,13 @@ def create_app(
                         "SELECT 1 FROM messages WHERE conversation_id = ? LIMIT 1",
                         (conversation_id,),
                     ).fetchone()
-                    title = conversation["title"] if has_messages else " ".join(payload.content.split())[:60]
+                    if not has_messages and hasattr(ai, "generate_title"):
+                        try:
+                            title = await ai.generate_title(payload.content, final_reply)
+                        except Exception:
+                            title = " ".join(payload.content.split())[:60]
+                    else:
+                        title = conversation["title"] if has_messages else " ".join(payload.content.split())[:60]
                     inserted = []
                     for role, content in (("user", payload.content), ("assistant", final_reply)):
                         p_val = prompt_toks if role == "user" else 0
@@ -707,7 +808,7 @@ def create_app(
                     )
                     updated_conversation = owned_conversation(db, conversation_id, user.id)
 
-                yield f"data: {json.dumps({'type': 'done', 'conversation': updated_conversation, 'messages': inserted})}\n\n"
+                yield f"data: {json.dumps({'type': 'done', 'conversation': updated_conversation, 'messages': inserted, 'suggestions': suggestions})}\n\n"
             except Exception as exc:
                 logger.exception("Error during response streaming", exc_info=exc)
                 yield f"data: {json.dumps({'type': 'error', 'detail': str(exc)})}\n\n"

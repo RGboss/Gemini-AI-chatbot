@@ -1,7 +1,8 @@
-from typing import Any
+import json
 import logging
+import re
 from collections.abc import AsyncIterator
-from typing import Protocol
+from typing import Any, Protocol
 
 import httpx
 from fastapi import HTTPException
@@ -257,6 +258,64 @@ class GeminiService:
         # If streaming attempts failed before any token emitted, fall back to complete generation
         fallback = await self.reply(messages, context=context)
         yield fallback
+
+    async def generate_title(self, prompt: str, reply: str) -> str:
+        """Uses LLM to summarize conversation intent into a concise 3-5 word title."""
+        client = self.active_clients[0] if self.active_clients else None
+        clean_fallback = " ".join(prompt.split())[:35]
+        if not client:
+            return clean_fallback
+        try:
+            req = (
+                "Summarize the topic of this exchange into a concise 3 to 5 word title. "
+                "Output ONLY the plain title with no quotes, punctuation, or preamble.\n\n"
+                f"User: {prompt[:300]}\nAssistant: {reply[:300]}"
+            )
+            res = await client.aio.models.generate_content(
+                model=self.model,
+                contents=[types.Content(role="user", parts=[types.Part(text=req)])],
+                config=types.GenerateContentConfig(max_output_tokens=30, temperature=0.3),
+            )
+            title = res.text.strip().strip('"\'`') if res.text else ""
+            return title[:50] if title else clean_fallback
+        except Exception as e:
+            logger.warning("Auto-title generation failed (%s), using heuristic", e)
+            return clean_fallback
+
+    async def generate_followup_suggestions(
+        self, messages: list[dict[str, str]], last_reply: str
+    ) -> list[str]:
+        """Generates 3 concise, highly relevant follow-up questions for dynamic interactive prompting."""
+        client = self.active_clients[0] if self.active_clients else None
+        fallback_suggestions = [
+            "Can you provide a practical code example?",
+            "What are the main advantages and trade-offs?",
+            "How can this be optimized for performance?",
+        ]
+        if not client:
+            return fallback_suggestions
+        try:
+            last_user = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+            prompt = (
+                "Based on the following query and response, suggest exactly 3 short, insightful follow-up questions "
+                "that the user might ask next. Return ONLY a valid JSON list of 3 strings, e.g. [\"Q1\", \"Q2\", \"Q3\"].\n\n"
+                f"User Query: {last_user[:300]}\n"
+                f"Assistant Response: {last_reply[:400]}"
+            )
+            res = await client.aio.models.generate_content(
+                model=self.model,
+                contents=[types.Content(role="user", parts=[types.Part(text=prompt)])],
+                config=types.GenerateContentConfig(max_output_tokens=150, temperature=0.7),
+            )
+            text = res.text.strip() if res.text else ""
+            match = re.search(r"\[.*\]", text, re.DOTALL)
+            if match:
+                parsed = json.loads(match.group(0))
+                if isinstance(parsed, list) and all(isinstance(x, str) for x in parsed):
+                    return [q.strip() for q in parsed[:3] if q.strip()]
+        except Exception as e:
+            logger.warning("Follow-up suggestion generation failed (%s)", e)
+        return fallback_suggestions
 
     async def close(self) -> None:
         for client in self.clients:

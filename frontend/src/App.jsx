@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import { api } from './api.js';
 
@@ -149,6 +149,12 @@ function Icon({ name, size = 20 }) {
         <line x1="12" y1="14" x2="15" y2="11" />
       </>
     ),
+    sparkles: (
+      <>
+        <path d="M12 3l1.912 5.813a2 2 0 0 0 1.275 1.275L21 12l-5.813 1.912a2 2 0 0 0-1.275 1.275L12 21l-1.912-5.813a2 2 0 0 0-1.275-1.275L3 12l5.813-1.912a2 2 0 0 0 1.275-1.275L12 3z" />
+        <path d="M5 3v4M3 5h4" />
+      </>
+    ),
   };
   return (
     <svg
@@ -257,6 +263,32 @@ function DocumentViewer({ filename, conversationId, targetPage, onClose, onSumma
     }
   }, [targetPage, loading]);
 
+  const totalMatches = useMemo(() => {
+    if (!searchTerm || !searchTerm.trim()) return 0;
+    const clean = searchTerm.trim().toLowerCase();
+    return pages.reduce((acc, p) => {
+      const count = p.text.toLowerCase().split(clean).length - 1;
+      return acc + Math.max(count, 0);
+    }, 0);
+  }, [pages, searchTerm]);
+
+  function renderHighlightedText(text, query) {
+    if (!query || !query.trim()) return text;
+    const clean = query.trim();
+    const escaped = clean.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`(${escaped})`, 'gi');
+    const parts = text.split(regex);
+    return parts.map((part, i) =>
+      part.toLowerCase() === clean.toLowerCase() ? (
+        <mark key={i} className="doc-search-highlight">
+          {part}
+        </mark>
+      ) : (
+        part
+      )
+    );
+  }
+
   const filteredPages = pages.filter((p) =>
     searchTerm ? p.text.toLowerCase().includes(searchTerm.toLowerCase()) : true
   );
@@ -277,6 +309,11 @@ function DocumentViewer({ filename, conversationId, targetPage, onClose, onSumma
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
+            {searchTerm.trim() && (
+              <span className="search-match-count">
+                {totalMatches} {totalMatches === 1 ? 'match' : 'matches'}
+              </span>
+            )}
           </div>
           {onSummarize && (
             <button
@@ -325,7 +362,7 @@ function DocumentViewer({ filename, conversationId, targetPage, onClose, onSumma
                 <span>PAGE {page.page}</span>
                 {targetPage === page.page && <span className="citation-target-pill">Referenced Citation</span>}
               </header>
-              <div className="doc-page-text">{page.text}</div>
+              <div className="doc-page-text">{renderHighlightedText(page.text, searchTerm)}</div>
             </section>
           ))
         )}
@@ -738,6 +775,10 @@ function Chat({ user, onSignOut }) {
       }
     }
 
+    const startTime = performance.now();
+    let firstTokenTime = null;
+    let streamSuggestions = [];
+
     try {
       const response = await fetch(`/api/conversations/${id}/messages/stream`, {
         method: 'POST',
@@ -768,16 +809,35 @@ function Chat({ user, onSignOut }) {
             try {
               const data = JSON.parse(line.slice(6));
               if (data.type === 'token') {
+                if (!firstTokenTime) {
+                  firstTokenTime = performance.now();
+                }
                 accumulated += data.token;
                 setStreamingText(accumulated);
               } else if (data.type === 'sources') {
                 if (data.confidence) {
                   setLastConfidence(data.confidence);
                 }
+              } else if (data.type === 'suggestions') {
+                streamSuggestions = data.suggestions || [];
               } else if (data.type === 'usage') {
                 setTokenStats(data);
               } else if (data.type === 'done') {
-                setMessages((items) => [...items, ...data.messages]);
+                const endTime = performance.now();
+                const ttft = firstTokenTime ? Math.round(firstTokenTime - startTime) : null;
+                const durationSec = Math.max((endTime - startTime) / 1000, 0.05);
+                const asstMsg = (data.messages || []).find((m) => m.role === 'assistant');
+                const compTokens = asstMsg?.completion_tokens || Math.max(Math.round(accumulated.length / 4), 1);
+                const speed = Math.round(compTokens / durationSec);
+                const metrics = { ttft, speed, durationSec: durationSec.toFixed(1) };
+                const suggestions = streamSuggestions.length ? streamSuggestions : (data.suggestions || []);
+
+                const augmentedMessages = (data.messages || []).map((m) =>
+                  m.role === 'assistant'
+                    ? { ...m, metrics, suggestions }
+                    : m
+                );
+                setMessages((items) => [...items, ...augmentedMessages]);
                 setConversations((items) => [
                   data.conversation,
                   ...items.filter((item) => item.id !== id),
@@ -1115,6 +1175,10 @@ function Chat({ user, onSignOut }) {
                     onRegenerate={handleRegenerate}
                     onSpeak={toggleSpeech}
                     speaking={speakingId === message.id}
+                    tokens={message.completion_tokens || message.total_tokens}
+                    metrics={message.metrics}
+                    suggestions={message.suggestions}
+                    onSuggestionClick={(sugText) => send(null, sugText)}
                   />
                 ))}
 
@@ -1376,10 +1440,24 @@ function Chat({ user, onSignOut }) {
                   </div>
                 </div>
 
+                <div className="analytics-card cost-saving">
+                  <div className="analytics-card-label">Estimated Cost Saved</div>
+                  <div className="analytics-card-val">
+                    ${(analyticsData?.cost_saved_usd ?? 0).toFixed(5)}
+                  </div>
+                </div>
+
                 <div className="analytics-card">
                   <div className="analytics-card-label">Total Tokens Billed</div>
                   <div className="analytics-card-val">
                     {(analyticsData?.total_tokens || 0).toLocaleString()}
+                  </div>
+                </div>
+
+                <div className="analytics-card">
+                  <div className="analytics-card-label">Estimated API Cost</div>
+                  <div className="analytics-card-val">
+                    ${(analyticsData?.estimated_cost_usd ?? 0).toFixed(5)}
                   </div>
                 </div>
 
@@ -1398,9 +1476,9 @@ function Chat({ user, onSignOut }) {
                 </div>
 
                 <div className="analytics-card">
-                  <div className="analytics-card-label">Total Messages</div>
+                  <div className="analytics-card-label">Efficiency Ratio</div>
                   <div className="analytics-card-val">
-                    {analyticsData?.total_messages || 0}
+                    {analyticsData?.efficiency_ratio_percent || 0}%
                   </div>
                 </div>
 
@@ -1413,7 +1491,7 @@ function Chat({ user, onSignOut }) {
               </div>
 
               <div className="analytics-footer-note">
-                Token optimization via Agentic RAG routing, HyDE semantic queries, and sliding window context compression.
+                Gemini Flash rates ($0.075/1M input, $0.30/1M output). Savings driven by Orbit pre-embedding text compression, hybrid routing, and sliding context window budget.
               </div>
             </div>
           </div>
@@ -1435,6 +1513,10 @@ function MessageBubble({
   onRegenerate,
   onSpeak,
   speaking,
+  tokens,
+  metrics,
+  suggestions,
+  onSuggestionClick,
 }) {
   const assistant = role === 'assistant';
   return (
@@ -1520,6 +1602,36 @@ function MessageBubble({
             <p className="user-text">{content}</p>
           )}
         </div>
+
+        {assistant && (metrics || tokens) && (
+          <div className="message-metrics-badge">
+            {metrics?.speed ? <span className="metric-pill">⚡ {metrics.speed} tok/s</span> : null}
+            {metrics?.ttft ? <span className="metric-pill">⏱️ {metrics.ttft}ms TTFT</span> : null}
+            {tokens ? <span className="metric-pill">🔢 {tokens} tok</span> : null}
+          </div>
+        )}
+
+        {assistant && suggestions && suggestions.length > 0 && (
+          <div className="followup-suggestions">
+            <div className="followup-label">
+              <Icon name="sparkles" size={13} />
+              <span>Suggested Follow-Ups:</span>
+            </div>
+            <div className="followup-chips">
+              {suggestions.map((sug, idx) => (
+                <button
+                  key={idx}
+                  type="button"
+                  className="followup-chip"
+                  onClick={() => onSuggestionClick && onSuggestionClick(sug)}
+                >
+                  <span>{sug}</span>
+                  <span className="followup-arrow">&rarr;</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </article>
   );

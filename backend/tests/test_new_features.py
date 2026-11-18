@@ -37,6 +37,16 @@ class FakeChatReply:
         self.calls.append({"messages": messages, "context": context})
         return "I am Orbit, and this is a verified reply."
 
+    async def generate_title(self, prompt: str, reply: str) -> str:
+        return "RAG Architecture Analysis"
+
+    async def generate_followup_suggestions(self, messages: list, last_reply: str) -> list[str]:
+        return [
+            "How does Qdrant handle high vector dimensions?",
+            "What is the cost saving of chunk compression?",
+            "Can we stream tokens directly to the frontend?",
+        ]
+
     async def close(self):
         pass
 
@@ -158,3 +168,34 @@ def test_token_tracking_and_analytics(feature_app):
     assert data["total_completion_tokens"] > 0
     assert "estimated_tokens_saved" in data
     assert "average_tokens_per_message" in data
+    assert "estimated_cost_usd" in data
+    assert "cost_saved_usd" in data
+    assert "efficiency_ratio_percent" in data
+    assert data["model_pricing"]["currency"] == "USD"
+
+
+def test_autotitle_and_followup_suggestions(feature_app):
+    client, _, _ = feature_app
+    register_and_login(client, "dan")
+    conv_id = create_conversation(client)
+
+    # 1. Send first message (should auto-title using generate_title)
+    res = client.post(
+        f"/api/conversations/{conv_id}/messages",
+        json={"content": "Can you explain vector search and embeddings in Orbit?"},
+    )
+    assert res.status_code == 200
+    conv_data = res.json()["conversation"]
+    assert conv_data["title"] == "RAG Architecture Analysis"
+
+    # 2. Test explicit autotitle endpoint
+    autotitle_res = client.post(f"/api/conversations/{conv_id}/autotitle")
+    assert autotitle_res.status_code == 200
+    assert autotitle_res.json()["title"] == "RAG Architecture Analysis"
+
+    # 3. Test suggestions endpoint
+    sugg_res = client.get(f"/api/conversations/{conv_id}/suggestions")
+    assert sugg_res.status_code == 200
+    suggestions = sugg_res.json()["suggestions"]
+    assert len(suggestions) == 3
+    assert "How does Qdrant handle high vector dimensions?" in suggestions
