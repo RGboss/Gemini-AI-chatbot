@@ -192,7 +192,13 @@ def test_api_failure_does_not_save_partial_turn_and_retry_works(setup):
 
 
 def test_missing_google_key_returns_actionable_error(tmp_path):
-    settings = Settings(_env_file=None, google_api_key="", database_path=tmp_path / "test.db")
+    settings = Settings(
+        _env_file=None,
+        google_api_key="",
+        gemini_orchestrator_key="",
+        gemini_worker_key="",
+        database_path=tmp_path / "test.db",
+    )
     with TestClient(create_app(settings)) as client:
         register(client)
         conversation_id = new_conversation(client)

@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import re
 import secrets
 import sqlite3
 import time
@@ -10,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Annotated
 from uuid import uuid4
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field, field_validator
@@ -296,24 +297,43 @@ def create_app(
             db.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
 
     @app.get("/api/conversations/{conversation_id}/export")
-    def export_conversation(conversation_id: str, user: AuthUser):
-        """Export session dialogue as formatted Markdown."""
+    def export_conversation(
+        conversation_id: str,
+        user: AuthUser,
+        format: str = Query(default="markdown", pattern="^(markdown|json)$"),
+    ):
+        """Export session dialogue as formatted Markdown or structured JSON."""
         with connect(config.database_path) as db:
             conversation = owned_conversation(db, conversation_id, user.id)
             rows = db.execute(
-                "SELECT role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY id",
+                "SELECT id, role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY id",
                 (conversation_id,),
             ).fetchall()
 
+        messages_list = [dict(row) for row in rows]
+        clean_title = re.sub(r"[^\w\s-]", "", conversation["title"]).strip() or "conversation"
+        file_slug = "_".join(clean_title.split())[:32]
+
+        if format == "json":
+            export_data = {
+                "conversation": conversation,
+                "exported_at": now(),
+                "messages": messages_list,
+            }
+            return JSONResponse(
+                content=export_data,
+                headers={"Content-Disposition": f'attachment; filename="{file_slug}.json"'},
+            )
+
         md_lines = [f"# {conversation['title']}\n\n*Exported from Orbit on {now()}*\n\n---\n"]
-        for row in rows:
-            speaker = "Orbit" if row["role"] == "assistant" else user.username
-            md_lines.append(f"### {speaker} ({row['created_at']})\n\n{row['content']}\n\n---\n")
+        for msg in messages_list:
+            speaker = "Orbit" if msg["role"] == "assistant" else user.username
+            md_lines.append(f"### {speaker} ({msg['created_at']})\n\n{msg['content']}\n\n---\n")
 
         return PlainTextResponse(
             content="".join(md_lines),
             media_type="text/markdown",
-            headers={"Content-Disposition": f'attachment; filename="{conversation["title"][:30]}.md"'},
+            headers={"Content-Disposition": f'attachment; filename="{file_slug}.md"'},
         )
 
     # --- Document Ingestion & Content Endpoints ---
@@ -397,6 +417,37 @@ def create_app(
             owned_conversation(db, conversation_id, user.id)
         pages = rag.get_document_content(filename, conversation_id=conversation_id)
         return {"filename": filename, "pages": pages}
+
+    @app.delete("/api/conversations/{conversation_id}/documents/{filename}")
+    def delete_conversation_document(conversation_id: str, filename: str, user: AuthUser):
+        """Deletes a document and its vector embeddings from the active session."""
+        with connect(config.database_path) as db:
+            owned_conversation(db, conversation_id, user.id)
+        success = rag.delete_document(
+            filename=filename,
+            conversation_id=conversation_id,
+            user_id=user.id,
+        )
+        if not success:
+            raise HTTPException(status_code=500, detail=f"Failed to delete document '{filename}'.")
+        return {"status": "deleted", "filename": filename}
+
+    @app.post("/api/conversations/{conversation_id}/documents/{filename}/summarize")
+    async def summarize_conversation_document(conversation_id: str, filename: str, user: AuthUser):
+        """Generates an executive summary of the document using Worker models."""
+        with connect(config.database_path) as db:
+            owned_conversation(db, conversation_id, user.id)
+        try:
+            summary = await rag.summarize_document(
+                filename=filename,
+                conversation_id=conversation_id,
+            )
+            return {"status": "success", "filename": filename, "summary": summary}
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except Exception as exc:
+            logger.exception("Document summarization failed", exc_info=exc)
+            raise HTTPException(status_code=500, detail=str(exc))
 
     @app.post("/chat")
     @app.post("/api/chat")

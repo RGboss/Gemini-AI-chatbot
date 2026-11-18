@@ -1273,6 +1273,45 @@ svg {
   color: var(--accent-cyan);
 }
 
+.doc-chip-label {
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 0;
+}
+
+.doc-chip-btn {
+  background: transparent;
+  border: none;
+  color: #94a3b8;
+  cursor: pointer;
+  padding: 2px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.doc-chip-btn:hover {
+  color: var(--accent-cyan);
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.doc-chip-btn.danger:hover {
+  color: #f87171;
+  background: rgba(239, 68, 68, 0.2);
+}
+
+.danger-icon:hover {
+  color: #f87171 !important;
+}
+
 .composer-footer-left {
   display: flex;
   align-items: center;

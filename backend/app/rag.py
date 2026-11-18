@@ -372,3 +372,113 @@ class RAGService:
                 return pages
 
         return []
+
+    def delete_document(
+        self,
+        filename: str,
+        conversation_id: str | None = None,
+        user_id: int | None = None,
+    ) -> bool:
+        """
+        Removes a document and all its indexed chunks from Qdrant vector store
+        and evicts it from the in-memory document page cache.
+        """
+        try:
+            must_conditions = [
+                FieldCondition(key="source", match=MatchValue(value=filename))
+            ]
+            if conversation_id:
+                must_conditions.append(
+                    FieldCondition(key="conversation_id", match=MatchValue(value=conversation_id))
+                )
+            if user_id:
+                must_conditions.append(
+                    FieldCondition(key="user_id", match=MatchValue(value=user_id))
+                )
+
+            delete_filter = Filter(must=must_conditions)
+            self.qdrant.delete(
+                collection_name=COLLECTION_NAME,
+                points_selector=delete_filter,
+            )
+
+            # Evict from in-memory cache
+            keys_to_remove = [
+                k for k in self.document_cache.keys()
+                if k.endswith(f":{filename}") or k == f"{conversation_id or ''}:{filename}"
+            ]
+            for k in keys_to_remove:
+                self.document_cache.pop(k, None)
+
+            logger.info("Successfully deleted document '%s' from Qdrant and cache.", filename)
+            return True
+        except Exception as exc:
+            logger.exception("Failed to delete document '%s': %s", filename, exc)
+            return False
+
+    async def summarize_document(
+        self, filename: str, conversation_id: str | None = None
+    ) -> str:
+        """
+        Generates an executive summary and key takeaways of an uploaded document
+        using worker models.
+        """
+        pages = self.get_document_content(filename, conversation_id=conversation_id)
+        if not pages:
+            # Fallback: look up chunks from Qdrant if cache is empty
+            query_filter = Filter(
+                must=[FieldCondition(key="source", match=MatchValue(value=filename))]
+            )
+            res, _ = self.qdrant.scroll(
+                collection_name=COLLECTION_NAME,
+                scroll_filter=query_filter,
+                limit=50,
+                with_payload=True,
+                with_vectors=False,
+            )
+            text_blocks = [p.payload.get("text", "") for p in res if p.payload]
+            document_text = "\n\n".join(text_blocks)
+        else:
+            document_text = "\n\n".join(
+                f"[Page {p.get('page', i + 1)}]\n{p.get('text', '')}"
+                for i, p in enumerate(pages)
+            )
+
+        if not document_text.strip():
+            raise ValueError(f"Document '{filename}' has no extractable content to summarize.")
+
+        # Cap text to 25,000 characters to keep summarization fast and concise
+        truncated_text = document_text[:25000]
+
+        prompt = (
+            f"You are Orbit Document Intelligence. Provide a structured, executive summary of the document below.\n\n"
+            f"DOCUMENT: {filename}\n"
+            f"CONTENT:\n{truncated_text}\n\n"
+            f"Structure your response with:\n"
+            f"1. **Executive Overview**: High-level purpose and subject matter.\n"
+            f"2. **Key Takeaways & Core Concepts**: Bullet points with primary insights.\n"
+            f"3. **Actionable Highlights or Notable Data**: Any dates, metrics, specifications, or conclusions."
+        )
+
+        if self.worker_clients:
+            for c in self.worker_clients:
+                try:
+                    res = await c.aio.models.generate_content(
+                        model=self.worker_audit_model,
+                        contents=prompt,
+                    )
+                    if res.text:
+                        return res.text.strip()
+                except Exception as e:
+                    logger.warning("Worker key summarization failed (%s), trying next...", e)
+                    continue
+
+        if self.client:
+            res = await self.client.aio.models.generate_content(
+                model=self.settings.gemini_model,
+                contents=prompt,
+            )
+            if res.text:
+                return res.text.strip()
+
+        raise RuntimeError("Failed to summarize document across available API keys.")

@@ -178,7 +178,7 @@ function formatCitations(text, defaultDoc) {
   return formatted;
 }
 
-function DocumentViewer({ filename, conversationId, targetPage, onClose }) {
+function DocumentViewer({ filename, conversationId, targetPage, onClose, onSummarize, onDelete }) {
   const [pages, setPages] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -224,6 +224,26 @@ function DocumentViewer({ filename, conversationId, targetPage, onClose }) {
               onChange={(e) => setSearchTerm(e.target.value)}
             />
           </div>
+          {onSummarize && (
+            <button
+              className="icon-button"
+              onClick={() => onSummarize(filename)}
+              title="Summarize document"
+              aria-label="Summarize document"
+            >
+              <Icon name="zap" size={15} />
+            </button>
+          )}
+          {onDelete && (
+            <button
+              className="icon-button danger-icon"
+              onClick={() => onDelete(filename)}
+              title="Delete document"
+              aria-label="Delete document"
+            >
+              <Icon name="trash" size={15} />
+            </button>
+          )}
           <button className="icon-button" onClick={onClose} aria-label="Close document viewer">
             <Icon name="close" size={16} />
           </button>
@@ -654,13 +674,37 @@ function Chat({ user, onSignOut }) {
     setTimeout(() => setCopiedId(null), 2000);
   }
 
-  async function handleExportMarkdown() {
+  async function handleExport(format = 'markdown') {
     if (!activeId) return;
     try {
-      window.open(`/api/conversations/${activeId}/export`, '_blank');
+      window.open(`/api/conversations/${activeId}/export?format=${format}`, '_blank');
     } catch (err) {
       handleError(err);
     }
+  }
+
+  async function handleDeleteDocument(filename) {
+    if (!activeId || !filename) return;
+    try {
+      await api(`/conversations/${activeId}/documents/${encodeURIComponent(filename)}`, {
+        method: 'DELETE',
+      });
+      const updated = documents.filter((d) => d !== filename);
+      setDocuments(updated);
+      if (viewerDoc === filename) {
+        setViewerDoc(updated[0] || '');
+        if (updated.length === 0) setViewerOpen(false);
+      }
+      setUploadBanner(`Removed "${filename}" from session context.`);
+      setTimeout(() => setUploadBanner(''), 4000);
+    } catch (err) {
+      handleError(err);
+    }
+  }
+
+  async function handleSummarizeDocument(filename) {
+    if (!activeId || !filename) return;
+    send(null, `Provide a concise executive summary and key takeaways for the attached document "${filename}".`);
   }
 
   function handleRegenerate() {
@@ -801,15 +845,26 @@ function Chat({ user, onSignOut }) {
 
             <div className="header-right">
               {messages.length > 0 && (
-                <button
-                  type="button"
-                  className="header-action-button"
-                  onClick={handleExportMarkdown}
-                  title="Export conversation as Markdown"
-                >
-                  <Icon name="download" size={14} />
-                  <span>Export</span>
-                </button>
+                <div style={{ display: 'inline-flex', gap: '4px' }}>
+                  <button
+                    type="button"
+                    className="header-action-button"
+                    onClick={() => handleExport('markdown')}
+                    title="Export conversation as Markdown"
+                  >
+                    <Icon name="download" size={14} />
+                    <span>Export MD</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="header-action-button"
+                    onClick={() => handleExport('json')}
+                    title="Export conversation as JSON"
+                  >
+                    <Icon name="download" size={14} />
+                    <span>JSON</span>
+                  </button>
+                </div>
               )}
 
               {documents.length > 0 && (
@@ -970,19 +1025,45 @@ function Chat({ user, onSignOut }) {
                 </span>
                 <div className="docs-chips">
                   {documents.map((doc) => (
-                    <button
+                    <div
                       key={doc}
-                      type="button"
                       className={`doc-chip ${viewerDoc === doc && viewerOpen ? 'active' : ''}`}
-                      onClick={() => {
-                        setViewerDoc(doc);
-                        setViewerOpen(true);
-                      }}
-                      title="Click to view in Split Screen"
                     >
-                      <Icon name="file" size={12} />
-                      <span>{doc}</span>
-                    </button>
+                      <button
+                        type="button"
+                        className="doc-chip-label"
+                        onClick={() => {
+                          setViewerDoc(doc);
+                          setViewerOpen(true);
+                        }}
+                        title="Click to view in Split Screen"
+                      >
+                        <Icon name="file" size={12} />
+                        <span>{doc}</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="doc-chip-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSummarizeDocument(doc);
+                        }}
+                        title={`Summarize ${doc}`}
+                      >
+                        <Icon name="zap" size={11} />
+                      </button>
+                      <button
+                        type="button"
+                        className="doc-chip-btn danger"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteDocument(doc);
+                        }}
+                        title={`Remove ${doc}`}
+                      >
+                        <Icon name="close" size={11} />
+                      </button>
+                    </div>
                   ))}
                 </div>
               </div>
@@ -1071,6 +1152,8 @@ function Chat({ user, onSignOut }) {
             conversationId={activeId}
             targetPage={targetCitationPage}
             onClose={() => setViewerOpen(false)}
+            onSummarize={handleSummarizeDocument}
+            onDelete={handleDeleteDocument}
           />
         )}
       </div>
