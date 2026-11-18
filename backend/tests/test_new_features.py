@@ -294,3 +294,43 @@ def test_context_cache_analytics_and_savings(feature_app):
     assert "total_cached_tokens" in adata
     assert "cache_savings_usd" in adata
     assert adata["model_pricing"]["cached_discount"] == "75%"
+
+
+def test_model_selection_streaming(feature_app):
+    client, _, ai = feature_app
+    register_and_login(client, "ivan")
+    conv_id = create_conversation(client)
+
+    # Test SSE streaming with explicit model parameter
+    with client.stream(
+        "POST",
+        f"/api/conversations/{conv_id}/messages/stream",
+        json={"content": "Streaming with Pro model.", "model": "gemini-3.5-pro"},
+    ) as response:
+        assert response.status_code == 200
+        lines = [line for line in response.iter_lines() if line]
+        assert any("data: " in line for line in lines)
+
+
+def test_fork_with_rag_document_cache(feature_app):
+    client, rag, _ = feature_app
+    register_and_login(client, "judy")
+    conv_id = create_conversation(client)
+
+    # Ingest document
+    file_bytes = b"Orbit Architecture Manual.\nPage 1: System utilizes reciprocal rank fusion.\nPage 2: Vector search with 3072 dimensions."
+    upload_res = client.post(
+        f"/api/conversations/{conv_id}/upload",
+        files={"file": ("manual.txt", io.BytesIO(file_bytes), "text/plain")},
+    )
+    assert upload_res.status_code == 200
+
+    # Fork conversation
+    fork_res = client.post(f"/api/conversations/{conv_id}/fork")
+    assert fork_res.status_code == 201
+    forked_id = fork_res.json()["id"]
+
+    # Verify document cache cloned
+    assert f"{forked_id}:manual.txt" in rag.document_cache
+    cached_content = rag.get_document_content("manual.txt", conversation_id=forked_id)
+    assert len(cached_content) > 0

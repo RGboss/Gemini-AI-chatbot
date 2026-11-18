@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import Markdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import mermaid from 'mermaid';
 import { api } from './api.js';
+
+mermaid.initialize({
+  startOnLoad: false,
+  theme: 'dark',
+  securityLevel: 'loose',
+  fontFamily: 'Inter, system-ui, sans-serif',
+});
 
 const suggestions = [
   {
@@ -228,11 +236,80 @@ function formatCitations(text, defaultDoc) {
   return formatted;
 }
 
+function MermaidRenderer({ chart }) {
+  const [svg, setSvg] = useState('');
+  const [error, setError] = useState(null);
+  const containerId = useRef(`mermaid-${Math.random().toString(36).slice(2, 10)}`);
+
+  useEffect(() => {
+    let active = true;
+    if (!chart || !chart.trim()) return;
+
+    mermaid
+      .render(containerId.current, chart.trim())
+      .then(({ svg: renderedSvg }) => {
+        if (active) {
+          setSvg(renderedSvg);
+          setError(null);
+        }
+      })
+      .catch((err) => {
+        if (active) {
+          console.warn('Mermaid render error:', err);
+          setError(err?.message || 'Diagram syntax error');
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [chart]);
+
+  if (error) {
+    return (
+      <div className="mermaid-fallback-box">
+        <div className="mermaid-fallback-note">⚠️ Could not render visual diagram. Displaying raw source:</div>
+        <pre className="mermaid-raw-syntax"><code>{chart}</code></pre>
+      </div>
+    );
+  }
+
+  if (!svg) {
+    return <div className="mermaid-loading">Rendering visual diagram...</div>;
+  }
+
+  return (
+    <div
+      className="mermaid-svg-wrapper"
+      dangerouslySetInnerHTML={{ __html: svg }}
+    />
+  );
+}
+
+function HtmlPreview({ code }) {
+  return (
+    <div className="html-live-sandbox">
+      <iframe
+        title="Interactive HTML/SVG Preview"
+        sandbox="allow-scripts allow-modals"
+        srcDoc={code}
+        className="live-preview-iframe"
+      />
+    </div>
+  );
+}
+
 function CodeBlock({ className, children, ...props }) {
   const [copied, setCopied] = useState(false);
   const match = /language-(\w+)/.exec(className || '');
-  const language = match ? match[1] : '';
+  const language = (match ? match[1] : '').toLowerCase();
   const codeString = String(children).replace(/\n$/, '');
+
+  const isMermaid = language === 'mermaid';
+  const isHtmlOrSvg = language === 'html' || language === 'svg';
+  const hasPreview = isMermaid || isHtmlOrSvg;
+
+  const [tab, setTab] = useState(isMermaid ? 'preview' : 'code');
 
   function handleCopy() {
     navigator.clipboard.writeText(codeString);
@@ -241,22 +318,52 @@ function CodeBlock({ className, children, ...props }) {
   }
 
   return (
-    <div className="code-block-container">
+    <div className={`code-block-container ${hasPreview ? 'has-artifact-preview' : ''}`}>
       <div className="code-block-header">
-        <span className="code-block-lang">{language || 'code'}</span>
-        <button
-          type="button"
-          className="code-copy-btn"
-          onClick={handleCopy}
-          title="Copy code to clipboard"
-        >
-          <Icon name={copied ? 'check' : 'copy'} size={12} />
-          <span>{copied ? 'Copied!' : 'Copy Code'}</span>
-        </button>
+        <div className="code-block-meta">
+          <span className="code-block-lang">{language || 'code'}</span>
+          {hasPreview && (
+            <div className="artifact-tabs">
+              <button
+                type="button"
+                className={`artifact-tab-btn ${tab === (isMermaid ? 'preview' : 'code') ? 'active' : ''}`}
+                onClick={() => setTab(isMermaid ? 'preview' : 'code')}
+              >
+                {isMermaid ? '📊 Visual Diagram' : '💻 Code'}
+              </button>
+              <button
+                type="button"
+                className={`artifact-tab-btn ${tab === (isMermaid ? 'code' : 'preview') ? 'active' : ''}`}
+                onClick={() => setTab(isMermaid ? 'code' : 'preview')}
+              >
+                {isMermaid ? '📝 Raw Syntax' : '👁️ Live Preview'}
+              </button>
+            </div>
+          )}
+        </div>
+
+        <div className="code-block-actions">
+          <button
+            type="button"
+            className="code-copy-btn"
+            onClick={handleCopy}
+            title="Copy code to clipboard"
+          >
+            <Icon name={copied ? 'check' : 'copy'} size={12} />
+            <span>{copied ? 'Copied!' : 'Copy Code'}</span>
+          </button>
+        </div>
       </div>
-      <pre className={className}>
-        <code {...props}>{children}</code>
-      </pre>
+
+      {isMermaid && tab === 'preview' ? (
+        <MermaidRenderer chart={codeString} />
+      ) : isHtmlOrSvg && tab === 'preview' ? (
+        <HtmlPreview code={codeString} />
+      ) : (
+        <pre className={className}>
+          <code {...props}>{children}</code>
+        </pre>
+      )}
     </div>
   );
 }
