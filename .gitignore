@@ -1,10 +1,25 @@
+# Environments and Secrets
 .env
+.env.*
+*.env
+*.env.local
+backend/.env
+backend/.env.*
+
+# Python
 .venv/
 __pycache__/
 .pytest_cache/
 *.pyc
+*.pyo
+
+# SQLite Databases
 *.db
 *.db-shm
 *.db-wal
+
+# Node & Build artifacts
 node_modules/
 dist/
+build/
+.DS_Store
