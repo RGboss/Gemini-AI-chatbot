@@ -18,13 +18,26 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-3.5-flash"
     embedding_model: str = "gemini-embedding-001"
     worker_audit_model: str = "gemini-3.5-flash"
+    database_url: str = ""
     database_path: Path = BACKEND_DIR / "chatbot.db"
     allowed_origins: list[str] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost",
+        "http://127.0.0.1",
     ]
     cookie_secure: bool = False
     session_days: int = Field(default=7, ge=1, le=30)
+
+    @property
+    def db_target(self) -> str | Path:
+        """Returns PostgreSQL connection URL if provided, otherwise SQLite Path."""
+        if self.database_url and (
+            self.database_url.startswith("postgresql://")
+            or self.database_url.startswith("postgres://")
+        ):
+            return self.database_url
+        return self.database_path
 
     @property
     def orchestrator_keys(self) -> list[str]:

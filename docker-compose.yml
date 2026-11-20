@@ -1,0 +1,81 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: orbit-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-orbit}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-orbit_password}
+      POSTGRES_DB: ${POSTGRES_DB:-orbit_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-orbit} -d ${POSTGRES_DB:-orbit_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - orbit-network
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: orbit-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-orbit}:${POSTGRES_PASSWORD:-orbit_password}@postgres:5432/${POSTGRES_DB:-orbit_db}
+      - GEMINI_ORCHESTRATOR_KEY=${GEMINI_ORCHESTRATOR_KEY:-}
+      - GEMINI_WORKER_KEY=${GEMINI_WORKER_KEY:-}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - ALLOWED_ORIGINS=["http://localhost:5173","http://127.0.0.1:5173","http://localhost","http://127.0.0.1"]
+      - COOKIE_SECURE=false
+      - SESSION_DAYS=7
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks:
+      - orbit-network
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: orbit-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      interval: 15s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    networks:
+      - orbit-network
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  orbit-network:
+    driver: bridge

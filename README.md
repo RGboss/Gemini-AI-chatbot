@@ -1,27 +1,56 @@
-# Orbit - Gemini AI chatbot
+# Orbit - Enterprise AI Chatbot & RAG Platform
 
-A full-stack, multi-user chatbot with a **FastAPI** backend, **SQLite** database,
-and **React + Vite** frontend. Replies come from Google's Gemini API.
+A full-stack, enterprise-grade chatbot and RAG platform with a **FastAPI** backend, **PostgreSQL** (with **SQLite** fallback) database, and **React + Vite** frontend served via **Nginx** reverse proxy with real-time SSE streaming. Replies and semantic embeddings are powered by Google's Gemini models and FastMCP worker agents.
 
 ## Features
 
-- Register, sign in, and sign out.
-- Passwords hashed with Argon2; random, revocable sessions in HttpOnly cookies.
-- Separate saved conversations for each user, with automatic titles and deletion.
-- Context-aware Gemini replies with Markdown and code formatting.
-- Responsive interface, suggested prompts, loading states, and actionable errors.
-- API key stays on the backend. It is never sent to the browser.
-- Failed AI requests do not save incomplete turns; the draft is restored for retry.
+- **Enterprise Database:** Production-ready PostgreSQL 16 database support via `psycopg` with automatic schema migrations, while maintaining lightweight SQLite fallback for local test suites.
+- **Docker & Nginx Architecture:** One-command multi-container deployment (`docker compose up --build`) orchestrating PostgreSQL, FastAPI backend, and Nginx reverse proxy with unbuffered Server-Sent Events (SSE) token streaming.
+- **Dual-Key Task Isolation:** Workload isolation between user-facing chat orchestration (`GEMINI_ORCHESTRATOR_KEY`) and heavy background RAG document processing/audits (`GEMINI_WORKER_KEY`).
+- **Hybrid RAG Pipeline:** Dense vector search via Qdrant combined with sparse keyword search (BM25) and cross-encoder reranking.
+- **Split-Screen Document Viewer & Inline Citations:** Native PDF viewer with clickable citations that link directly to extracted page chunks.
+- **Authentication & Security:** Argon2 password hashing with secure, revocable HttpOnly cookie sessions.
+- **Context-Aware Streaming:** Real-time token streaming with ephemeral conversational memory injection and full Markdown/code highlighting.
 
-## Requirements
+---
 
-- Python 3.10+ and Node.js 20.19+ or 22.12+.
-- A Google Gemini API key from [Google AI Studio](https://aistudio.google.com/apikey).
-  Model access, quotas, and billing depend on your Google account.
+## Quickstart with Docker (Recommended)
 
-## 1. Start the backend
+Run the entire stack (PostgreSQL + FastAPI Backend + Nginx Frontend) in containers:
 
-Run these commands in PowerShell from the project root:
+### 1. Configure Environment
+Create your backend `.env` file from the template:
+
+```bash
+cp backend/.env.example backend/.env
+```
+
+Add your Gemini API key(s) in `backend/.env`:
+```ini
+GEMINI_ORCHESTRATOR_KEY="AIzaSy..."
+GEMINI_WORKER_KEY="AIzaSy..."
+```
+
+### 2. Launch Stack with Docker Compose
+
+```bash
+docker compose up --build -d
+```
+
+- **Web Application:** <http://localhost>
+- **Backend API Docs:** <http://localhost:8000/docs>
+- **API Health Check:** <http://localhost:8000/api/health>
+
+To stop the containers:
+```bash
+docker compose down
+```
+
+---
+
+## Local Development (Without Docker)
+
+### 1. Start the Backend (FastAPI)
 
 ```powershell
 python -m venv backend\.venv
@@ -29,23 +58,18 @@ backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
 Copy-Item backend\.env.example backend\.env
 ```
 
-Edit `backend\.env` and replace the placeholder `GOOGLE_API_KEY` with your own key.
-Do not share or commit this file. `GEMINI_MODEL` defaults to `gemini-2.5-flash`;
-change it to another text model available to your account if needed.
+Edit `backend\.env` to add your API keys. By default, leaving `DATABASE_URL` empty automatically uses local SQLite (`backend/chatbot.db`). To connect to a local PostgreSQL instance, specify:
+```ini
+DATABASE_URL=postgresql://orbit:orbit_password@localhost:5432/orbit_db
+```
 
+Run the FastAPI server:
 ```powershell
 Set-Location backend
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-- Interactive API documentation: <http://127.0.0.1:8000/docs>
-- Health/configuration status: <http://127.0.0.1:8000/api/health>
-- SQLite is initialized automatically at `backend\chatbot.db`.
-- Restart the backend after changing environment settings.
-
-## 2. Start the frontend
-
-In a second PowerShell terminal, from the project root:
+### 2. Start the Frontend (Vite)
 
 ```powershell
 Set-Location frontend
@@ -53,40 +77,30 @@ npm install
 npm run dev
 ```
 
-Open **<http://127.0.0.1:5173>**, select **Create an account**, and start chatting.
-Use the frontend URL (not the API URL) to use the app.
-Enter sends a message; Shift+Enter adds a newline.
+Open **<http://127.0.0.1:5173>** to use the application in local development mode.
 
-VS Code also includes **Start FastAPI backend** and **Start React frontend** tasks
-under **Terminal > Run Task**, after dependencies are installed.
-
-Vite proxies `/api` to the backend so the browser uses same-origin session cookies.
-Both `localhost:5173` and `127.0.0.1:5173` are allowed, but use one consistently;
-browser sessions are tied to the hostname.
+---
 
 ## Configuration
 
-| Environment variable | Purpose |
-| --- | --- |
-| `GOOGLE_API_KEY` | Server-only Gemini API key |
-| `GEMINI_MODEL` | Gemini text model ID |
-| `DATABASE_PATH` | SQLite path; relative paths resolve from the backend process's working directory |
-| `ALLOWED_ORIGINS` | JSON list of allowed frontend origins |
-| `COOKIE_SECURE` | Set to `true` when deployed over HTTPS |
-| `SESSION_DAYS` | Session expiration, 1-30 days (default 7) |
+| Environment Variable | Description | Default |
+| --- | --- | --- |
+| `DATABASE_URL` | PostgreSQL connection URL | `""` (falls back to `DATABASE_PATH`) |
+| `DATABASE_PATH` | Local SQLite database file path | `chatbot.db` |
+| `GEMINI_ORCHESTRATOR_KEY` | Dedicated API key for main chat orchestrator | `""` |
+| `GEMINI_WORKER_KEY` | Dedicated API key for background MCP / RAG worker | `""` |
+| `GOOGLE_API_KEY` | Fallback Gemini API key | `""` |
+| `GEMINI_MODEL` | Primary chat completion model | `gemini-3.5-flash` |
+| `EMBEDDING_MODEL` | Text embedding model for RAG vectorization | `gemini-embedding-001` |
+| `ALLOWED_ORIGINS` | JSON list of allowed CORS origins | `["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost", "http://127.0.0.1"]` |
+| `COOKIE_SECURE` | Set to `true` when deployed over HTTPS | `false` |
+| `SESSION_DAYS` | Session expiration in days | `7` |
 
-The app starts without a key so you can set up accounts and inspect the UI, but
-chat requests return an explicit configuration error until a valid key is set.
-An invalid key/model, quota exhaustion, a timeout, or a blocked response is also
-shown as an error; there are no simulated AI replies.
+---
 
-Messages are capped at 8,000 characters. Each request includes the newest 20
-complete turns, trimmed to 40,000 characters of prior context. All messages remain
-saved locally even when older context is no longer sent to Gemini.
+## Tests and Verification
 
-## Tests and production build
-
-From the project root:
+Run the comprehensive unit and integration test suite:
 
 ```powershell
 backend\.venv\Scripts\python.exe -m pip install -r backend\requirements-dev.txt
@@ -94,44 +108,29 @@ Set-Location backend
 .\.venv\Scripts\python.exe -m pytest tests -q
 ```
 
-Tests use a temporary SQLite database and a fake Gemini service; they do not use
-your key, contact Google, or spend API quota.
+Tests run automatically against an isolated SQLite test database and mock Gemini services to verify database operations, API routes, dual-key isolation, and RAG pipelines without consuming Google API quota.
 
-In another terminal:
+---
 
-```powershell
-Set-Location frontend
-npm run build
-npm run preview
-```
-
-## Deployment and privacy
-
-This is a working local starter, not a hardened public service. Before making it
-public, use HTTPS and secure cookies, add authentication/AI rate limits and account
-recovery, and define a retention/backup policy. SQLite stores messages as plaintext;
-protect the database and its backups with filesystem permissions.
-
-Run **one backend worker**: the concurrent-turn guard is in process. Multiple
-workers/instances require a shared per-conversation lock or queue. Serve the React
-build through a web server that proxies `/api` to FastAPI on the same origin. Add
-that origin to `ALLOWED_ORIGINS`; Vite preview is only for local verification.
-
-User messages and recent context are sent to Google to generate replies. Never
-send secrets or sensitive personal data without evaluating Google's applicable
-data-use terms. The interface loads Google Fonts; remove the CSS import to use
-only local fallback fonts.
-
-## Project layout
+## Project Layout
 
 ```text
-backend/
-  app/                  Configuration, SQLite, authentication, routes, Gemini client
-  tests/                API, isolation, persistence, and concurrency tests
-  .env.example          Configuration template (no real credentials)
-  requirements.txt
-  requirements-dev.txt
-frontend/
-  src/                  React interface, API helper, styles
-  vite.config.js        Local API proxy
+├── docker-compose.yml       # Multi-container orchestration (Postgres, Backend, Frontend/Nginx)
+├── nginx/
+│   └── default.conf         # Production Nginx reverse proxy with unbuffered SSE streaming
+├── backend/
+│   ├── app/
+│   │   ├── config.py        # Settings and dual-key/database target management
+│   │   ├── database.py      # Dual-engine database abstraction (PostgreSQL + SQLite)
+│   │   ├── main.py          # FastAPI application, auth, and chat endpoints
+│   │   ├── gemini.py        # Google GenAI client and streaming synthesis
+│   │   └── rag.py           # Hybrid search (Dense Qdrant + BM25 + Cross-Encoder reranking)
+│   ├── Dockerfile           # Python 3.11-slim container image
+│   ├── requirements.txt     # Backend dependencies including psycopg and FastMCP
+│   └── tests/               # Pytest suite with PostgreSQL & SQLite test coverage
+├── frontend/
+│   ├── src/                 # React UI components, split-screen PDF viewer, citations
+│   ├── Dockerfile           # Multi-stage Node.js build + Nginx runtime container
+│   ├── nginx.conf           # Standalone container Nginx configuration
+│   └── vite.config.js       # Vite build & local dev server proxy
 ```

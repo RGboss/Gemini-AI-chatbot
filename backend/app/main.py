@@ -19,7 +19,7 @@ from pwdlib import PasswordHash
 from starlette.concurrency import run_in_threadpool
 
 from .config import Settings
-from .database import connect, initialize
+from .database import DatabaseError, IntegrityError, connect, initialize, is_postgres_target
 from .gemini import GeminiService, ReplyGenerator
 from .rag import RAGService
 
@@ -119,7 +119,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        initialize(config.database_path)
+        initialize(config.db_target)
         yield
         await ai.close()
 
@@ -144,7 +144,8 @@ def create_app(
         return await call_next(request)
 
     @app.exception_handler(sqlite3.Error)
-    async def database_error(request: Request, exc: sqlite3.Error):
+    @app.exception_handler(DatabaseError)
+    async def database_error(request: Request, exc: Exception):
         logger.exception("Database operation failed", exc_info=exc)
         return JSONResponse(
             status_code=503, content={"detail": "Database unavailable. Please try again."}
@@ -154,7 +155,7 @@ def create_app(
         token = request.cookies.get(COOKIE_NAME)
         if not token:
             raise HTTPException(status_code=401, detail="Please sign in.")
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             row = db.execute(
                 """SELECT users.id, users.username FROM sessions
                    JOIN users ON users.id = sessions.user_id
@@ -167,7 +168,7 @@ def create_app(
 
     AuthUser = Annotated[User, Depends(current_user)]
 
-    def start_session(db: sqlite3.Connection, user_id: int, response: Response) -> None:
+    def start_session(db: Any, user_id: int, response: Response) -> None:
         token = secrets.token_urlsafe(32)
         duration = config.session_days * 86400
         db.execute("DELETE FROM sessions WHERE expires_at <= ?", (int(time.time()),))
@@ -185,7 +186,7 @@ def create_app(
             path="/api",
         )
 
-    def owned_conversation(db: sqlite3.Connection, conversation_id: str, user_id: int):
+    def owned_conversation(db: Any, conversation_id: str, user_id: int):
         row = db.execute(
             "SELECT * FROM conversations WHERE id = ? AND user_id = ?",
             (conversation_id, user_id),
@@ -211,6 +212,7 @@ def create_app(
             "worker_configured": bool(config.gemini_worker_key or config.worker_keys),
             "dual_key_isolation": True,
             "failover_active": True,
+            "database": "postgresql" if is_postgres_target(config.db_target) else "sqlite",
             "rag_enabled": True,
             "hybrid_search": True,
             "streaming_enabled": True,
@@ -229,13 +231,14 @@ def create_app(
     @app.post("/api/auth/register", response_model=User, status_code=201)
     async def register(credentials: Credentials, response: Response):
         hashed = await run_in_threadpool(password_hasher.hash, credentials.password)
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             try:
                 cursor = db.execute(
                     "INSERT INTO users(username, password_hash, created_at) VALUES (?, ?, ?)",
                     (credentials.username, hashed, now()),
                 )
-            except sqlite3.IntegrityError as exc:
+            except (sqlite3.IntegrityError, IntegrityError) as exc:
+                raise HTTPException(status_code=409, detail="Username already taken.") from exc
                 raise HTTPException(status_code=409, detail="Username already taken.") from exc
             user_id = cursor.lastrowid
             start_session(db, user_id, response)
@@ -243,7 +246,7 @@ def create_app(
 
     @app.post("/api/auth/login", response_model=User)
     async def login(credentials: Credentials, response: Response):
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             row = db.execute(
                 "SELECT * FROM users WHERE username = ?", (credentials.username,)
             ).fetchone()
@@ -255,7 +258,7 @@ def create_app(
         )
         if not valid:
             raise HTTPException(status_code=401, detail="Invalid username or password.")
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             start_session(db, row["id"], response)
         return User(id=row["id"], username=row["username"])
 
@@ -267,7 +270,7 @@ def create_app(
     def logout(request: Request, response: Response):
         token = request.cookies.get(COOKIE_NAME)
         if token:
-            with connect(config.database_path) as db:
+            with connect(config.db_target) as db:
                 db.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash(token),))
         response.delete_cookie(
             COOKIE_NAME, path="/api", secure=config.cookie_secure, httponly=True, samesite="lax"
@@ -276,7 +279,7 @@ def create_app(
     @app.get("/api/analytics/tokens")
     def get_token_analytics(user: AuthUser):
         """Returns token usage efficiency, cumulative usage, cost estimation, and optimization savings."""
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             row = db.execute(
                 """SELECT 
                        COUNT(*) as total_messages,
@@ -334,7 +337,7 @@ def create_app(
     # --- Conversation Endpoints ---
     @app.get("/api/conversations", response_model=list[Conversation])
     def list_conversations(user: AuthUser):
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             rows = db.execute(
                 "SELECT * FROM conversations WHERE user_id = ? ORDER BY is_pinned DESC, updated_at DESC, id",
                 (user.id,),
@@ -345,7 +348,7 @@ def create_app(
     def create_conversation(user: AuthUser):
         timestamp = now()
         conversation_id = uuid4().hex
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             db.execute(
                 """INSERT INTO conversations(id, user_id, title, created_at, updated_at, system_prompt, is_pinned)
                    VALUES (?, ?, ?, ?, ?, ?, 0)""",
@@ -360,7 +363,7 @@ def create_app(
         user: AuthUser,
     ):
         """Updates title and/or pin status of a conversation."""
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             owned_conversation(db, conversation_id, user.id)
             updates = []
             params = []
@@ -384,7 +387,7 @@ def create_app(
         user: AuthUser,
     ):
         """Sets a persistent system persona directive for this conversation."""
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             owned_conversation(db, conversation_id, user.id)
             db.execute(
                 "UPDATE conversations SET system_prompt = ?, updated_at = ? WHERE id = ?",
@@ -403,7 +406,7 @@ def create_app(
 
     @app.get("/api/conversations/{conversation_id}", response_model=ConversationDetail)
     def get_conversation(conversation_id: str, user: AuthUser):
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             conversation = owned_conversation(db, conversation_id, user.id)
             rows = db.execute(
                 "SELECT * FROM messages WHERE conversation_id = ? ORDER BY id",
@@ -413,7 +416,7 @@ def create_app(
 
     @app.delete("/api/conversations/{conversation_id}", status_code=204)
     async def delete_conversation(conversation_id: str, user: AuthUser):
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             owned_conversation(db, conversation_id, user.id)
             if conversation_id in inflight:
                 raise HTTPException(status_code=409, detail="Wait for the current reply before deleting.")
@@ -426,7 +429,7 @@ def create_app(
         message_id: int | None = Query(None, description="Fork up to this message ID"),
     ):
         """Time-travel forking: clones a conversation from any prior message into an independent branch."""
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             source_conv = owned_conversation(db, conversation_id, user.id)
             if message_id is not None:
                 rows = db.execute(
@@ -478,7 +481,7 @@ def create_app(
         format: str = Query(default="markdown", pattern="^(markdown|json)$"),
     ):
         """Export session dialogue as formatted Markdown or structured JSON."""
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             conversation = owned_conversation(db, conversation_id, user.id)
             rows = db.execute(
                 "SELECT id, role, content, created_at FROM messages WHERE conversation_id = ? ORDER BY id",
@@ -518,7 +521,7 @@ def create_app(
         Compresses long historical turns into a dense memory anchor,
         reducing subsequent turn latency and cutting prompt token usage by 70-85%.
         """
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             conv = owned_conversation(db, conversation_id, user.id)
             rows = db.execute(
                 "SELECT id, role, content, created_at, prompt_tokens, completion_tokens, total_tokens, cached_tokens FROM messages WHERE conversation_id = ? ORDER BY id",
@@ -557,7 +560,7 @@ def create_app(
     @app.post("/api/conversations/{conversation_id}/autotitle")
     async def autotitle_conversation(conversation_id: str, user: AuthUser):
         """Generates an intelligent concise topic title using LLM."""
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             conversation = owned_conversation(db, conversation_id, user.id)
             rows = db.execute(
                 "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id LIMIT 4",
@@ -572,7 +575,7 @@ def create_app(
         else:
             new_title = " ".join(user_msg.split())[:35] or "Conversation"
 
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             db.execute(
                 "UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?",
                 (new_title, now(), conversation_id),
@@ -582,7 +585,7 @@ def create_app(
     @app.get("/api/conversations/{conversation_id}/suggestions")
     async def get_conversation_suggestions(conversation_id: str, user: AuthUser):
         """Generates 3 contextual follow-up query suggestions based on conversation history."""
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             owned_conversation(db, conversation_id, user.id)
             rows = db.execute(
                 "SELECT role, content FROM messages WHERE conversation_id = ? ORDER BY id DESC LIMIT 4",
@@ -626,7 +629,7 @@ def create_app(
         user_id = None
         token = request.cookies.get(COOKIE_NAME)
         if token:
-            with connect(config.database_path) as db:
+            with connect(config.db_target) as db:
                 row = db.execute(
                     "SELECT user_id FROM sessions WHERE token_hash = ? AND expires_at > ?",
                     (token_hash(token), int(time.time())),
@@ -656,7 +659,7 @@ def create_app(
         file: UploadFile = File(...),
     ):
         """Uploads and indexes a document directly into the active session."""
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             owned_conversation(db, conversation_id, user.id)
 
         if not file.filename.lower().endswith((".pdf", ".txt", ".md", ".csv", ".json")):
@@ -680,7 +683,7 @@ def create_app(
     @app.get("/api/conversations/{conversation_id}/documents")
     def get_conversation_documents(conversation_id: str, user: AuthUser):
         """Lists all document names indexed for this session."""
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             owned_conversation(db, conversation_id, user.id)
         docs = rag.list_documents(conversation_id=conversation_id)
         return {"documents": docs}
@@ -688,7 +691,7 @@ def create_app(
     @app.get("/api/conversations/{conversation_id}/documents/{filename}/content")
     def get_conversation_document_content(conversation_id: str, filename: str, user: AuthUser):
         """Provides page-by-page text for Split-Screen Document Viewer."""
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             owned_conversation(db, conversation_id, user.id)
         pages = rag.get_document_content(filename, conversation_id=conversation_id)
         return {"filename": filename, "pages": pages}
@@ -696,7 +699,7 @@ def create_app(
     @app.delete("/api/conversations/{conversation_id}/documents/{filename}")
     def delete_conversation_document(conversation_id: str, filename: str, user: AuthUser):
         """Deletes a document and its vector embeddings from the active session."""
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             owned_conversation(db, conversation_id, user.id)
         success = rag.delete_document(
             filename=filename,
@@ -710,7 +713,7 @@ def create_app(
     @app.post("/api/conversations/{conversation_id}/documents/{filename}/summarize")
     async def summarize_conversation_document(conversation_id: str, filename: str, user: AuthUser):
         """Generates an executive summary of the document using Worker models."""
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             owned_conversation(db, conversation_id, user.id)
         try:
             summary = await rag.summarize_document(
@@ -758,7 +761,7 @@ def create_app(
     # --- Messaging Endpoint (with Hybrid RAG & Memory Expansion) ---
     @app.post("/api/conversations/{conversation_id}/messages", response_model=SendResult)
     async def send_message(conversation_id: str, payload: SendMessage, user: AuthUser):
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             active_conv = owned_conversation(db, conversation_id, user.id)
             rows = db.execute(
                 """SELECT role, content FROM (
@@ -827,7 +830,7 @@ def create_app(
             cached_toks = usage.get("cached_tokens", 0)
 
             timestamp = now()
-            with connect(config.database_path) as db:
+            with connect(config.db_target) as db:
                 conversation = owned_conversation(db, conversation_id, user.id)
                 has_messages = db.execute(
                     "SELECT 1 FROM messages WHERE conversation_id = ? LIMIT 1",
@@ -867,7 +870,7 @@ def create_app(
     @app.post("/api/conversations/{conversation_id}/messages/stream")
     async def send_message_stream(conversation_id: str, payload: SendMessage, user: AuthUser):
         """Streams assistant reply tokens via Server-Sent Events (SSE)."""
-        with connect(config.database_path) as db:
+        with connect(config.db_target) as db:
             active_conv = owned_conversation(db, conversation_id, user.id)
             rows = db.execute(
                 """SELECT role, content FROM (
@@ -976,7 +979,7 @@ def create_app(
                 comp_toks = usage.get("completion_tokens", 0)
                 cached_toks = usage.get("cached_tokens", 0)
 
-                with connect(config.database_path) as db:
+                with connect(config.db_target) as db:
                     conversation = owned_conversation(db, conversation_id, user.id)
                     has_messages = db.execute(
                         "SELECT 1 FROM messages WHERE conversation_id = ? LIMIT 1",
