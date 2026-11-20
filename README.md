@@ -1,25 +1,24 @@
 # Orbit - Enterprise AI Chatbot & RAG Platform
 
-A full-stack, enterprise-grade chatbot and RAG platform with a **FastAPI** backend, **PostgreSQL** (with **SQLite** fallback) database, and **React + Vite** frontend served via **Nginx** reverse proxy with real-time SSE streaming. Replies and semantic embeddings are powered by Google's Gemini models and FastMCP worker agents.
+A full-stack, enterprise-grade chatbot and RAG platform with a **FastAPI** backend, **PostgreSQL** (with **SQLite** fallback) database, and **React + Vite** frontend served via **Nginx** reverse proxy on port `8081` with real-time SSE streaming. Powered by Google's Gemini models and FastMCP worker agents.
 
-## Features
+## Architecture Highlights
 
-- **Enterprise Database:** Production-ready PostgreSQL 16 database support via `psycopg` with automatic schema migrations, while maintaining lightweight SQLite fallback for local test suites.
-- **Docker & Nginx Architecture:** One-command multi-container deployment (`docker compose up --build`) orchestrating PostgreSQL, FastAPI backend, and Nginx reverse proxy with unbuffered Server-Sent Events (SSE) token streaming.
-- **Dual-Key Task Isolation:** Workload isolation between user-facing chat orchestration (`GEMINI_ORCHESTRATOR_KEY`) and heavy background RAG document processing/audits (`GEMINI_WORKER_KEY`).
+- **Docker & Nginx Orchestration:** Multi-container deployment (`docker compose up --build -d`) under isolated network `gemini-chatbot-net`.
+- **Gunicorn + Uvicorn Production Backend:** FastAPI served via `gunicorn -k uvicorn.workers.UvicornWorker -w 2 --timeout 120` running as an unprivileged non-root user (`appuser`).
+- **Nginx Reverse Proxy on Port 8081:** Serves optimized React assets, proxies `/api/` with unbuffered Server-Sent Events (SSE) token streaming (`proxy_buffering off; chunked_transfer_encoding on;`), proxies `/health`, and applies security headers (`X-Frame-Options: SAMEORIGIN`, `X-Content-Type-Options: nosniff`).
+- **Dual-Engine Database Layer:** Production-ready PostgreSQL 16 database support via `psycopg` with automatic schema migrations, while maintaining lightweight SQLite fallback for local test suites.
+- **Dual-Key Task Isolation:** Workload isolation between user-facing chat orchestration (`GEMINI_ORCHESTRATOR_KEY` / `GEMINI_API_KEY`) and heavy background RAG document processing/audits (`GEMINI_WORKER_KEY`).
+- **API Resilience & Model Failover:** Automatic exponential backoff retries and dynamic failover to `gemini-2.5-pro` and `gemini-1.5-flash` on `429` quota exhaustion or `503` temporary provider unavailability.
 - **Hybrid RAG Pipeline:** Dense vector search via Qdrant combined with sparse keyword search (BM25) and cross-encoder reranking.
 - **Split-Screen Document Viewer & Inline Citations:** Native PDF viewer with clickable citations that link directly to extracted page chunks.
-- **Authentication & Security:** Argon2 password hashing with secure, revocable HttpOnly cookie sessions.
-- **Context-Aware Streaming:** Real-time token streaming with ephemeral conversational memory injection and full Markdown/code highlighting.
 
 ---
 
-## Quickstart with Docker (Recommended)
-
-Run the entire stack (PostgreSQL + FastAPI Backend + Nginx Frontend) in containers:
+## Docker Quickstart
 
 ### 1. Configure Environment
-Create your backend `.env` file from the template:
+Create your `.env` file in `backend/.env`:
 
 ```bash
 cp backend/.env.example backend/.env
@@ -27,24 +26,61 @@ cp backend/.env.example backend/.env
 
 Add your Gemini API key(s) in `backend/.env`:
 ```ini
+GEMINI_API_KEY="AIzaSy..."
+# Or use Dual-Key isolation:
 GEMINI_ORCHESTRATOR_KEY="AIzaSy..."
 GEMINI_WORKER_KEY="AIzaSy..."
 ```
 
-### 2. Launch Stack with Docker Compose
+### 2. Docker Compose Commands
 
+#### Start the Stack in Detached Mode:
 ```bash
 docker compose up --build -d
 ```
 
-- **Web Application:** <http://localhost>
-- **Backend API Docs:** <http://localhost:8000/docs>
-- **API Health Check:** <http://localhost:8000/api/health>
-
-To stop the containers:
+#### Check Container Status & Health:
 ```bash
-docker compose down
+docker compose ps
 ```
+
+#### View Live Logs:
+```bash
+# All services
+docker compose logs -f
+
+# Specific service
+docker compose logs -f backend
+docker compose logs -f frontend
+docker compose logs -f postgres
+```
+
+#### Rebuild Containers Cleanly:
+```bash
+docker compose build --no-cache
+docker compose up -d
+```
+
+#### Stop & Remove Containers:
+```bash
+# Stop containers (preserves postgres data volume)
+docker compose down
+
+# Stop and wipe database volume
+docker compose down -v
+```
+
+---
+
+## Service Endpoints & Verification
+
+| Service | Target URL | Description |
+| --- | --- | --- |
+| **Frontend UI (Nginx)** | <http://localhost:8081/> | Main interactive chat interface & PDF split viewer |
+| **Backend Health** | <http://localhost:8081/health> | Container healthcheck endpoint (`{"status": "healthy"}`) |
+| **API Health & Metadata** | <http://localhost:8081/api/health> | Complete system, database, and model status |
+| **Direct RAG / Chat API** | `POST http://localhost:8081/api/chat` | Send `{"message": "..."}`, returns answer and citations |
+| **PostgreSQL** | `localhost:5432` | Internal database (`orbit:orbit_password` / `orbit_db`) |
 
 ---
 
@@ -58,12 +94,7 @@ backend\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt
 Copy-Item backend\.env.example backend\.env
 ```
 
-Edit `backend\.env` to add your API keys. By default, leaving `DATABASE_URL` empty automatically uses local SQLite (`backend/chatbot.db`). To connect to a local PostgreSQL instance, specify:
-```ini
-DATABASE_URL=postgresql://orbit:orbit_password@localhost:5432/orbit_db
-```
-
-Run the FastAPI server:
+Run FastAPI server:
 ```powershell
 Set-Location backend
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
@@ -77,30 +108,13 @@ npm install
 npm run dev
 ```
 
-Open **<http://127.0.0.1:5173>** to use the application in local development mode.
+Open **<http://127.0.0.1:5173>**.
 
 ---
 
-## Configuration
+## Running the Automated Test Suite
 
-| Environment Variable | Description | Default |
-| --- | --- | --- |
-| `DATABASE_URL` | PostgreSQL connection URL | `""` (falls back to `DATABASE_PATH`) |
-| `DATABASE_PATH` | Local SQLite database file path | `chatbot.db` |
-| `GEMINI_ORCHESTRATOR_KEY` | Dedicated API key for main chat orchestrator | `""` |
-| `GEMINI_WORKER_KEY` | Dedicated API key for background MCP / RAG worker | `""` |
-| `GOOGLE_API_KEY` | Fallback Gemini API key | `""` |
-| `GEMINI_MODEL` | Primary chat completion model | `gemini-3.5-flash` |
-| `EMBEDDING_MODEL` | Text embedding model for RAG vectorization | `gemini-embedding-001` |
-| `ALLOWED_ORIGINS` | JSON list of allowed CORS origins | `["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost", "http://127.0.0.1"]` |
-| `COOKIE_SECURE` | Set to `true` when deployed over HTTPS | `false` |
-| `SESSION_DAYS` | Session expiration in days | `7` |
-
----
-
-## Tests and Verification
-
-Run the comprehensive unit and integration test suite:
+Run all 56 unit, integration, and Docker migration tests:
 
 ```powershell
 backend\.venv\Scripts\python.exe -m pip install -r backend\requirements-dev.txt
@@ -108,29 +122,4 @@ Set-Location backend
 .\.venv\Scripts\python.exe -m pytest tests -q
 ```
 
-Tests run automatically against an isolated SQLite test database and mock Gemini services to verify database operations, API routes, dual-key isolation, and RAG pipelines without consuming Google API quota.
-
----
-
-## Project Layout
-
-```text
-├── docker-compose.yml       # Multi-container orchestration (Postgres, Backend, Frontend/Nginx)
-├── nginx/
-│   └── default.conf         # Production Nginx reverse proxy with unbuffered SSE streaming
-├── backend/
-│   ├── app/
-│   │   ├── config.py        # Settings and dual-key/database target management
-│   │   ├── database.py      # Dual-engine database abstraction (PostgreSQL + SQLite)
-│   │   ├── main.py          # FastAPI application, auth, and chat endpoints
-│   │   ├── gemini.py        # Google GenAI client and streaming synthesis
-│   │   └── rag.py           # Hybrid search (Dense Qdrant + BM25 + Cross-Encoder reranking)
-│   ├── Dockerfile           # Python 3.11-slim container image
-│   ├── requirements.txt     # Backend dependencies including psycopg and FastMCP
-│   └── tests/               # Pytest suite with PostgreSQL & SQLite test coverage
-├── frontend/
-│   ├── src/                 # React UI components, split-screen PDF viewer, citations
-│   ├── Dockerfile           # Multi-stage Node.js build + Nginx runtime container
-│   ├── nginx.conf           # Standalone container Nginx configuration
-│   └── vite.config.js       # Vite build & local dev server proxy
-```
+Tests run automatically against an isolated in-memory SQLite database and mock Gemini services to verify database operations, API routes, dual-key isolation, RAG pipelines, and error failover without consuming Google API quota.

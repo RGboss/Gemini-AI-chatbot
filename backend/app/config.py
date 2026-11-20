@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     )
 
     google_api_key: str = ""
+    gemini_api_key: str = ""
     gemini_orchestrator_key: str = ""
     gemini_worker_key: str = ""
     gemini_model: str = "gemini-3.5-flash"
@@ -25,6 +26,8 @@ class Settings(BaseSettings):
         "http://127.0.0.1:5173",
         "http://localhost",
         "http://127.0.0.1",
+        "http://localhost:8081",
+        "http://127.0.0.1:8081",
     ]
     cookie_secure: bool = False
     session_days: int = Field(default=7, ge=1, le=30)
@@ -49,7 +52,7 @@ class Settings(BaseSettings):
         ):
             return []
         keys = []
-        for k in [self.gemini_orchestrator_key, self.google_api_key, self.gemini_worker_key]:
+        for k in [self.gemini_orchestrator_key, self.gemini_api_key, self.google_api_key, self.gemini_worker_key]:
             if k and k != "replace_with_your_google_ai_studio_key" and k not in keys:
                 keys.append(k)
         return keys
@@ -64,7 +67,7 @@ class Settings(BaseSettings):
         ):
             return []
         keys = []
-        for k in [self.gemini_worker_key, self.google_api_key, self.gemini_orchestrator_key]:
+        for k in [self.gemini_worker_key, self.gemini_api_key, self.google_api_key, self.gemini_orchestrator_key]:
             if k and k != "replace_with_your_google_ai_studio_key" and k not in keys:
                 keys.append(k)
         return keys

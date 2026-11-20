@@ -199,6 +199,10 @@ def create_app(
         document_text: str = Field(min_length=1, max_length=50000)
         criteria: str = Field(default="technical accuracy, architecture, risks", max_length=1000)
 
+    @app.get("/health")
+    def health_check():
+        return {"status": "healthy"}
+
     @app.get("/api/health")
     def health():
         configured = bool(config.orchestrator_keys or config.google_api_key)
