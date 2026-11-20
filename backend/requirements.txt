@@ -1,5 +1,6 @@
 fastapi>=0.115,<1.0
 uvicorn[standard]>=0.34,<1.0
+gunicorn>=23.0.0
 google-genai>=1.0,<2.0
 httpx>=0.28,<1.0
 pydantic-settings>=2.7,<3.0
@@ -10,3 +11,4 @@ langchain-text-splitters>=0.3
 qdrant-client>=1.12
 rank-bm25>=0.2.2
 fastmcp>=4.1.4
+psycopg[binary]>=3.2

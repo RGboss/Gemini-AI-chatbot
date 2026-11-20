@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 import logging
@@ -135,54 +136,71 @@ class GeminiService:
             )
 
         target_model = model or self.model
+        models_to_try = [target_model]
+        for fallback in ["gemini-2.5-pro", "gemini-1.5-flash"]:
+            if fallback not in models_to_try:
+                models_to_try.append(fallback)
+
         last_error = None
-        for i, client in enumerate(candidate_clients):
-            try:
-                response = await client.aio.models.generate_content(
-                    model=target_model,
-                    contents=contents,
-                    config=config,
-                )
-                return response
-            except errors.APIError as exc:
-                last_error = exc
-                logger.warning(
-                    "Key #%d failed (code=%s). Attempting automatic failover...",
-                    i + 1,
-                    exc.code,
-                )
-                if i + 1 < len(candidate_clients) and exc.code in (429, 401, 403):
-                    continue
-                if exc.code == 429:
+        for current_model in models_to_try:
+            for i, client in enumerate(candidate_clients):
+                retries = 2 if current_model == target_model else 1
+                for attempt in range(retries):
+                    try:
+                        response = await client.aio.models.generate_content(
+                            model=current_model,
+                            contents=contents,
+                            config=config,
+                        )
+                        return response
+                    except errors.APIError as exc:
+                        last_error = exc
+                        logger.warning(
+                            "Model %s with Key #%d attempt %d failed (code=%s). Attempting failover...",
+                            current_model,
+                            i + 1,
+                            attempt + 1,
+                            exc.code,
+                        )
+                        if exc.code in (429, 503) and attempt + 1 < retries:
+                            await asyncio.sleep(min(0.25 * (2**attempt), 1.0))
+                            continue
+                        if i + 1 < len(candidate_clients) and exc.code in (429, 401, 403, 503):
+                            break
+                        break
+                    except (httpx.TransportError, TimeoutError, OSError) as exc:
+                        last_error = exc
+                        logger.warning("Key #%d network error (%s). Trying failover...", i + 1, type(exc).__name__)
+                        if i + 1 < len(candidate_clients):
+                            break
+                        break
+
+        if last_error:
+            if isinstance(last_error, errors.APIError):
+                if last_error.code == 429:
                     raise HTTPException(
                         status_code=429,
                         detail="Orbit request quota exceeded. Please try again later.",
-                    ) from exc
-                if exc.code in (401, 403):
+                    ) from last_error
+                if last_error.code in (401, 403):
                     raise HTTPException(
                         status_code=502,
                         detail="API key was denied. Check API key and permissions in backend/.env.",
-                    ) from exc
-                if exc.code in (400, 404):
+                    ) from last_error
+                if last_error.code in (400, 404):
                     raise HTTPException(
                         status_code=502,
                         detail="Request rejected. Check the server's API key and model configuration in backend/.env.",
-                    ) from exc
+                    ) from last_error
                 raise HTTPException(
                     status_code=502,
                     detail="Orbit service is temporarily unavailable. Please try again.",
-                ) from exc
-            except (httpx.TransportError, TimeoutError, OSError) as exc:
-                last_error = exc
-                logger.warning("Key #%d network error (%s). Trying failover...", i + 1, type(exc).__name__)
-                if i + 1 < len(candidate_clients):
-                    continue
+                ) from last_error
+            if isinstance(last_error, (httpx.TransportError, TimeoutError, OSError)):
                 raise HTTPException(
                     status_code=504,
                     detail="Connection timed out. Please try again.",
-                ) from exc
-
-        if last_error:
+                ) from last_error
             raise HTTPException(
                 status_code=502,
                 detail="Orbit service is temporarily unavailable. All failover attempts exhausted.",
