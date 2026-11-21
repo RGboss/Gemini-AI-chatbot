@@ -36,8 +36,9 @@ def exec_termux(cmd, timeout=60):
         ssh.close()
 
 def exec_proot(cmd, timeout=120):
-    escaped_cmd = cmd.replace('"', '\\"')
-    full_cmd = f'proot-distro login ubuntu -- bash -c "unset ANDROID_DATA ANDROID_ROOT; {escaped_cmd}"'
+    import base64
+    b64 = base64.b64encode(cmd.encode('utf-8')).decode('ascii')
+    full_cmd = f"proot-distro login ubuntu -- bash -c 'unset ANDROID_DATA ANDROID_ROOT; echo {b64} | base64 -d | bash'"
     return exec_termux(full_cmd, timeout=timeout)
 
 def write_remote_file(content: str, remote_path: str):
@@ -96,6 +97,11 @@ def deploy():
     print("=== Step 2: Configure .env ===")
     env_content = get_env_content()
     write_remote_file(env_content, f"{REMOTE_REPO_DIR}/backend/.env")
+
+    print("=== Step 2.5: Test App Import ===")
+    exec_proot(f"""
+        cd {REMOTE_REPO_DIR}/backend && {REMOTE_VENV_DIR}/bin/python3 -c "import app.main; print('APP_LOAD_SUCCESS:', app.main.app)"
+    """)
 
     print("=== Step 3: Transfer Frontend Dist Assets ===")
     local_dist = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "frontend", "dist"))
@@ -203,7 +209,7 @@ mkdir -p /var/log/gemini-chatbot
 chmod 755 /root
 chmod -R 755 /root/Gemini-AI-chatbot
 
-# 1. Stop old gemini backend instances
+# 1. Stop old instances
 pkill -f "uvicorn.*8001" 2>/dev/null || true
 sleep 1
 
@@ -254,11 +260,17 @@ tail -f /var/log/gemini-chatbot/backend.log
     write_remote_file(start_services_sh, f"{REMOTE_REPO_DIR}/start_services.sh")
     exec_proot(f"chmod +x {REMOTE_REPO_DIR}/start_services.sh")
 
-    print("=== Step 6: Launch in Persistent Termux Tmux Session ===")
+    print("=== Step 6: Create Launcher & Run in Termux Tmux Session ===")
+    launcher = """#!/data/data/com.termux/files/usr/bin/bash
+proot-distro login ubuntu -- env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin bash /root/Gemini-AI-chatbot/start_services.sh
+"""
+    import base64
+    b64_launcher = base64.b64encode(launcher.encode('utf-8')).decode('ascii')
+    exec_termux(f'echo "{b64_launcher}" | base64 -d > ~/run_gemini.sh && chmod +x ~/run_gemini.sh')
+
+    exec_proot("rm -f /var/log/gemini-chatbot/backend.log")
     exec_termux("tmux kill-session -t gemini_chatbot 2>/dev/null || true")
-    exec_termux(
-        "tmux new-session -d -s gemini_chatbot proot-distro login ubuntu -- env -i HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin bash /root/Gemini-AI-chatbot/start_services.sh"
-    )
+    exec_termux("tmux new-session -d -s gemini_chatbot ~/run_gemini.sh")
 
     print("Waiting 12s for services to boot...")
     time.sleep(12)
@@ -267,7 +279,7 @@ tail -f /var/log/gemini-chatbot/backend.log
     exec_termux("tmux list-sessions")
 
     print("Checking backend log output:")
-    exec_proot("cat /var/log/gemini-chatbot/backend.log | tail -n 25")
+    exec_proot("cat /var/log/gemini-chatbot/backend.log")
 
     print("=== Step 7: Verify Port 8081 Local and Remote ===")
     exec_proot("curl -s http://127.0.0.1:8081/health")
