@@ -1,0 +1,12 @@
+{
+  "gemini-chatbot-health-gate": {
+    "enabled": true,
+    "SessionStart": [
+      {
+        "type": "command",
+        "command": "powershell -NoProfile -ExecutionPolicy Bypass -File ./hooks/session-start.ps1",
+        "timeout": 15
+      }
+    ]
+  }
+}

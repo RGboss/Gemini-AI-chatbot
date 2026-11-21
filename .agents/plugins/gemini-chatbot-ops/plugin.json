@@ -1,0 +1,11 @@
+{
+  "name": "gemini-chatbot-ops",
+  "displayName": "Gemini Chatbot Ops",
+  "description": "Operations, lifecycle monitoring, container diagnostics, and health checks for Gemini-AI-chatbot on port 8081.",
+  "version": "1.0.0",
+  "suggestedPrompts": [
+    "Run chatbot-doctor to verify container health and /api/chat latency",
+    "Inspect Docker logs and Nginx reverse proxy configuration",
+    "Test Gemini API resilience and automatic error failover"
+  ]
+}
