@@ -39,7 +39,7 @@ class GeminiService:
         self.clients = [
             genai.Client(
                 api_key=key,
-                http_options=types.HttpOptions(timeout=60_000),
+                http_options=types.HttpOptions(timeout=15_000),
             )
             for key in self.keys
         ]
@@ -137,7 +137,7 @@ class GeminiService:
 
         target_model = model or self.model
         models_to_try = [target_model]
-        for fallback in ["gemini-2.5-pro", "gemini-1.5-flash"]:
+        for fallback in ["gemini-3.5-flash-lite", "gemini-flash-latest", "gemini-2.5-pro", "gemini-1.5-flash"]:
             if fallback not in models_to_try:
                 models_to_try.append(fallback)
 
