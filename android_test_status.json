@@ -1,0 +1,35 @@
+{
+  "status": "COMPLETED",
+  "started_at": "2026-11-28T13:22:43.564238",
+  "scheduled_end": "2026-11-28T15:22:43.564238",
+  "last_cycle": 1,
+  "last_updated": "2026-11-28T13:22:56.686078",
+  "device_ip": "192.168.29.94",
+  "results": [
+    {
+      "name": "Embedded Server Health (:8080)",
+      "pass": true,
+      "details": "200 in 75.26ms"
+    },
+    {
+      "name": "Settings & Model (:8080)",
+      "pass": true,
+      "details": "200 in 119.13ms"
+    },
+    {
+      "name": "AI Chat Generation (:8080)",
+      "pass": true,
+      "details": "200 in 6890.12ms (model: gemini-3.5-flash)"
+    },
+    {
+      "name": "Worker Node Gateway",
+      "pass": true,
+      "details": "Standalone Mode (embedded active) in 2001.13ms"
+    },
+    {
+      "name": "APK Artifact",
+      "pass": true,
+      "details": "Valid (20.22 MB, DEX + Web bundled)"
+    }
+  ]
+}
